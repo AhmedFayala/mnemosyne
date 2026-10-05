@@ -534,9 +534,10 @@ def _embedding_caps() -> tuple:
 
 def _cap_for_api(texts: List[str]) -> List[str]:
     """Cap each text before the API call when MNEMOSYNE_EMBEDDING_MAX_CHARS
-    is set. Off by default: characters are not a token budget, and silent
-    head-truncation can drop retrieval content on endpoints that accept the
-    full text. When enabled, every truncation is logged."""
+    and/or MNEMOSYNE_EMBEDDING_MAX_BYTES is set. Off by default: characters
+    are not a token budget, and silent head-truncation can drop retrieval
+    content on endpoints that accept the full text. When enabled, every
+    truncation is logged."""
     limit, byte_limit = _embedding_max_chars(), _embedding_max_bytes()
     if limit <= 0 and byte_limit <= 0:
         return texts
@@ -551,7 +552,9 @@ def _cap_for_api(texts: List[str]) -> List[str]:
             )
             text = text[:limit]
         if byte_limit > 0:
-            raw = text.encode("utf-8")
+            original = text
+            # lone surrogates have no UTF-8 form: drop them rather than raise
+            raw = text.encode("utf-8", "ignore")
             if len(raw) > byte_limit:
                 logger.warning(
                     "embedding input truncated: %d -> %d bytes (model=%s, cap=MNEMOSYNE_EMBEDDING_MAX_BYTES)",
@@ -561,6 +564,15 @@ def _cap_for_api(texts: List[str]) -> List[str]:
                 )
                 # a cut inside a multi-byte character drops that character, never emits half of it
                 text = raw[:byte_limit].decode("utf-8", "ignore")
+                if not text and original:
+                    # Fail loud before any request: an input the cap would
+                    # reduce to nothing would otherwise be sent as "".
+                    raise _EmbeddingPolicyError(
+                        f"MNEMOSYNE_EMBEDDING_MAX_BYTES={byte_limit} is smaller than the "
+                        f"first character of an embedding input "
+                        f"({len(raw.decode('utf-8', 'ignore')[:1].encode('utf-8'))} UTF-8 bytes); "
+                        "raise the cap or unset it"
+                    )
         capped.append(text)
     return capped
 

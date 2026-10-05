@@ -191,3 +191,53 @@ def test_query_cache_follows_byte_cap_changes(monkeypatch):
 
     assert [p["input"] for p in payloads] == [["щщщщ"], ["щщ"]]
     embeddings._embed_query_cached.cache_clear()
+
+
+@pytest.mark.parametrize("value", ["0", "-5", "", "   ", "abc", "1.5"])
+def test_byte_cap_disabled_values(monkeypatch, value):
+    text = "x" * 5000 + "\u044f" * 100
+    monkeypatch.setenv("MNEMOSYNE_EMBEDDING_MAX_BYTES", value)
+
+    assert embeddings._cap_for_api([text]) == [text]
+
+
+@pytest.mark.parametrize("value", ["abc", "1.5"])
+def test_byte_cap_invalid_value_warns(monkeypatch, caplog, value):
+    text = "x" * 5000 + "\u044f" * 100
+    monkeypatch.setenv("MNEMOSYNE_EMBEDDING_MAX_BYTES", value)
+
+    with caplog.at_level("WARNING", logger="mnemosyne.core.embeddings"):
+        assert embeddings._cap_for_api([text]) == [text]
+
+    assert any(
+        "invalid MNEMOSYNE_EMBEDDING_MAX_BYTES" in rec.getMessage()
+        for rec in caplog.records
+    )
+
+
+def test_byte_cap_smaller_than_first_char_raises_before_request(monkeypatch):
+    monkeypatch.setenv("MNEMOSYNE_EMBEDDING_MAX_BYTES", "1")
+    monkeypatch.setenv("MNEMOSYNE_EMBEDDING_API_URL", "http://127.0.0.1:11435/v1")
+
+    def fail_if_called(*_args, **_kwargs):
+        pytest.fail("embedding request sent despite a cap-to-empty input")
+
+    monkeypatch.setattr(embeddings.urllib.request, "urlopen", fail_if_called)
+
+    with pytest.raises(
+        embeddings._EmbeddingPolicyError, match="MNEMOSYNE_EMBEDDING_MAX_BYTES"
+    ):
+        embeddings._embed_api(["\u044f"])
+
+
+def test_byte_cap_drops_lone_surrogates(monkeypatch):
+    monkeypatch.setenv("MNEMOSYNE_EMBEDDING_MAX_BYTES", "1")
+    assert embeddings._cap_for_api(["a\udcffb"]) == ["a"]
+
+    monkeypatch.setenv("MNEMOSYNE_EMBEDDING_MAX_BYTES", "10")
+    assert embeddings._cap_for_api(["a\udcffb"]) == ["a\udcffb"]
+
+
+def test_byte_cap_four_byte_chars_exact_boundary(monkeypatch):
+    monkeypatch.setenv("MNEMOSYNE_EMBEDDING_MAX_BYTES", "9")
+    assert embeddings._cap_for_api(["\U00020000" * 3]) == ["\U00020000" * 2]
