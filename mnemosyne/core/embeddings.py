@@ -10,11 +10,12 @@ import logging
 import os
 import random
 import ssl
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import List, Optional
+from typing import List, NoReturn, Optional
 from functools import lru_cache
 
 from mnemosyne.core.user_agent import application_user_agent
@@ -144,6 +145,8 @@ def _is_api_model(model_name: str) -> bool:
         return True
     # Custom endpoint: if MNEMOSYNE_EMBEDDING_API_URL is set to a non-OpenRouter URL,
     # assume the user has their own API server and any model name should route there.
+    # The empty default is deliberate here: with no URL configured the model
+    # routes locally, unlike _effective_base_url()'s OpenRouter fallback.
     base_url = os.environ.get("MNEMOSYNE_EMBEDDING_API_URL", "")
     if base_url and not _is_openrouter_url(base_url):
         return True
@@ -342,11 +345,137 @@ def _safe_api_endpoint(url: str) -> str:
         return "<invalid-url>"
 
 
-class _EmbeddingPolicyError(ValueError):
+class EmbeddingPolicyError(ValueError):
     """A configuration/transport-policy refusal (credentialed cleartext
     endpoint, credentialed redirect). Raised OUTSIDE the retry-and-degrade
-    machinery: unlike transient transport failures these must surface to the
-    caller instead of degrading to keyword-only recall."""
+    machinery. Broad except blocks up the stack (beam et al.) degrade any
+    embedding failure to keyword-only recall, so the announcement is bound
+    to the single raise funnel (_raise_policy_refusal) instead of relying
+    on every raise site remembering it, and on this class staying free of
+    construction side effects (subprocess tests and out-of-tree code
+    construct it for classification): one ERROR-level log per refusal kind
+    per process, making the degraded mode operator-visible instead of
+    silent. The security goal (no request sent) is unaffected."""
+
+    def __init__(self, message: str, refusal_key: str = "policy") -> None:
+        super().__init__(message)
+        self.refusal_key = refusal_key
+
+
+# The private name shipped in released tags (v0.7.1+); out-of-tree code that
+# classified this failure via `except embeddings._EmbeddingPolicyError:`
+# would otherwise crash on the attribute lookup at except-evaluation time.
+_EmbeddingPolicyError = EmbeddingPolicyError
+
+_ANNOUNCED_POLICY_REFUSALS: set[str] = set()
+# A single (refusal_key, message) tuple, or None: one atomic reference
+# assignment per writer, so concurrent embed threads can never expose a
+# torn key/message pair to the status surfaces.
+_LAST_POLICY_REFUSAL = None
+_ANNOUNCE_LOCK = threading.RLock()
+
+
+def _announce_policy_refusal(refusal_key: str, message: str) -> None:
+    # Keyed on the refusal KIND, not the message: redirect targets can vary
+    # per response, and keying on the full text would both flood the log and
+    # grow the set without bound. logger.error alone is the announcement:
+    # unconfigured processes still print WARNING+ records to stderr via
+    # logging's last-resort handler, so a bare print would only duplicate
+    # the text wherever a stderr handler exists, and a sys.stderr=None
+    # interpreter would push it to stdout, corrupting an MCP stdio session.
+    # Emission is guarded so no logging problem can take down the refusal.
+    with _ANNOUNCE_LOCK:
+        if refusal_key in _ANNOUNCED_POLICY_REFUSALS:
+            return
+        _ANNOUNCED_POLICY_REFUSALS.add(refusal_key)
+        banner = (
+            "Embedding transport policy refusal: vector recall is degraded to "
+            f"keyword-only until this is fixed. {message}"
+        )
+    # The kind is claimed inside the lock, so concurrent refusals still
+    # announce exactly once; the emit stays outside so a slow or blocked
+    # logging handler cannot serialize embedding threads or status readers.
+    # A failed emit releases the claim instead of consuming it: the next
+    # refusal of this kind retries the announcement instead of staying
+    # silent for the process lifetime.
+    try:
+        logger.error("%s", banner)
+    except Exception:
+        with _ANNOUNCE_LOCK:
+            _ANNOUNCED_POLICY_REFUSALS.discard(refusal_key)
+        return
+
+
+def _raise_policy_refusal(refusal_key: str, message: str) -> NoReturn:
+    """The single raise funnel for transport-policy refusals: records the
+    refusal for the status surfaces, announces it once per kind, then raises
+    EmbeddingPolicyError."""
+    global _LAST_POLICY_REFUSAL
+    _LAST_POLICY_REFUSAL = (refusal_key, message)
+    _announce_policy_refusal(refusal_key, message)
+    raise EmbeddingPolicyError(message, refusal_key=refusal_key)
+
+
+def _effective_base_url() -> str:
+    return os.environ.get("MNEMOSYNE_EMBEDDING_API_URL", "https://openrouter.ai/api/v1")
+
+
+def _cleartext_refusal_message(base_url: str) -> str:
+    return (
+        f"Refusing to send embedding credentials over non-HTTPS endpoint "
+        f"{_safe_api_endpoint(base_url)}: point MNEMOSYNE_EMBEDDING_API_URL at an https:// "
+        "URL, or unset MNEMOSYNE_EMBEDDING_API_KEY / OPENAI_API_KEY to "
+        "embed without credentials (for example a local endpoint that "
+        "needs no key)."
+    )
+
+
+def _cleartext_refusal_applies(base_url: str) -> bool:
+    """The same gate _embed_api enforces, extracted so the status surfaces
+    and the live policy cannot drift."""
+    return bool(_OPENAI_API_KEY) and not base_url.startswith("https://")
+
+
+def _static_cleartext_refusal():
+    """The refusal derivable from configuration alone, no embed call, so
+    processes that never embed (mnemosyne doctor, diagnose) still report
+    it instead of claiming full availability."""
+    if _is_disabled() or not _is_api_model(_DEFAULT_MODEL):
+        return None
+    base_url = _effective_base_url()
+    if _cleartext_refusal_applies(base_url):
+        return _cleartext_refusal_message(base_url)
+    return None
+
+
+def policy_refusal_message():
+    """The active transport-policy refusal, None when healthy. The live
+    cleartext gate wins, so a mid-process configuration fix stops being
+    reported even with a warm query-vector cache; a credentialed-redirect
+    refusal has no static signal and reports the last one raised in this
+    process (cleared again by a successful API embed), so it is visible to
+    the serving process's own status surfaces, not to a fresh doctor.
+    With embeddings disabled entirely there is no active embedding route,
+    so no refusal is reported. Never raises: a malformed configuration
+    flag degrades to no report instead of taking down a status read. Lets
+    status surfaces report the degraded mode."""
+    try:
+        if _is_disabled():
+            return None
+        static = _static_cleartext_refusal()
+        if static is not None:
+            return static
+        # A redirect refusal has no static signal; report it only while the
+        # API path is still the active model route, so an operator who fixed
+        # the misconfiguration by switching to the local model (or disabling
+        # embeddings) stops seeing it. One snapshot of the tuple: a
+        # concurrent validated embed clears it between separate reads.
+        last = _LAST_POLICY_REFUSAL
+        if last is not None and last[0] == "credentialed-redirect" and _is_api_model(_DEFAULT_MODEL):
+            return last[1]
+    except Exception:
+        return None
+    return None
 
 
 class _CredentialedNoRedirect(urllib.request.HTTPRedirectHandler):
@@ -360,11 +489,12 @@ class _CredentialedNoRedirect(urllib.request.HTTPRedirectHandler):
     endpoint URL instead."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise _EmbeddingPolicyError(
+        _raise_policy_refusal(
+            "credentialed-redirect",
             f"Refusing to follow redirect to {_safe_api_endpoint(newurl)} for a credentialed "
             "embedding request: urllib would forward Authorization to the "
             "redirect target. Point MNEMOSYNE_EMBEDDING_API_URL at the "
-            "final endpoint URL."
+            "final endpoint URL.",
         )
 
 
@@ -477,6 +607,11 @@ def _ensure_api_vectors(result: Optional[np.ndarray], base_url: str, expected: i
             f"(endpoint={_safe_api_endpoint(base_url)}, model={_DEFAULT_MODEL}); "
             "the result is not a valid embedding vector."
         )
+    # A fully validated embed proves the configuration healthy: clear any
+    # stale refusal only here, after validation, so a garbage 200 response
+    # cannot clear it while recall still degrades.
+    global _LAST_POLICY_REFUSAL
+    _LAST_POLICY_REFUSAL = None
     return result
 
 
@@ -484,7 +619,7 @@ def _embed_api(texts: List[str]) -> Optional[np.ndarray]:
     """Embed texts via OpenAI-compatible API (OpenRouter or custom endpoint)."""
     global _API_CALL_COUNT
     # Require API key for OpenRouter; custom endpoints may not need one.
-    base_url = os.environ.get("MNEMOSYNE_EMBEDDING_API_URL", "https://openrouter.ai/api/v1")
+    base_url = _effective_base_url()
     is_custom = not _is_openrouter_url(base_url)
     if not is_custom and not _OPENAI_API_KEY:
         logger.warning(
@@ -492,15 +627,12 @@ def _embed_api(texts: List[str]) -> Optional[np.ndarray]:
             _safe_api_endpoint(base_url),
         )
         return None
-    if _OPENAI_API_KEY and not base_url.startswith("https://"):
+    if _cleartext_refusal_applies(base_url):
         # Fail loud before any request: sending Authorization (and the text
         # being embedded) over cleartext http:// leaks both on the wire.
-        raise _EmbeddingPolicyError(
-            f"Refusing to send embedding credentials over non-HTTPS endpoint "
-            f"{_safe_api_endpoint(base_url)}: point MNEMOSYNE_EMBEDDING_API_URL at an https:// "
-            "URL, or unset MNEMOSYNE_EMBEDDING_API_KEY / OPENAI_API_KEY to "
-            "embed without credentials (for example a local endpoint that "
-            "needs no key)."
+        _raise_policy_refusal(
+            "credentialed-cleartext",
+            _cleartext_refusal_message(base_url),
         )
 
     # Append /embeddings to the path, preserving any query string. A naive
@@ -556,7 +688,7 @@ def _embed_api(texts: List[str]) -> Optional[np.ndarray]:
             embeddings = [item["embedding"] for item in data["data"]]
             _API_CALL_COUNT += 1
             return np.array(embeddings, dtype=np.float32)
-        except _EmbeddingPolicyError:
+        except EmbeddingPolicyError:
             # Policy refusals (credentialed redirect) propagate; the generic
             # handler below would otherwise degrade them to keyword-only.
             raise

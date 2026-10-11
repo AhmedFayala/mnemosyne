@@ -496,6 +496,7 @@ _RUNTIME_CHECK_NAMES = frozenset(
         "huggingface_hub",
         "ctransformers",
         "embeddings_available",
+        "embedding_policy_refusal",
         "embeddings_model",
         "embeddings_dim",
         "sqlite_vec_available",

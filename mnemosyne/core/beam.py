@@ -10592,6 +10592,7 @@ class BeamMemory:
             _explain_trace.set_embedding(
                 available=embeddings_available,
                 computed=query_embedding_computed,
+                refusal=_embeddings.policy_refusal_message(),
             )
             _explain_trace.add_ranked_candidates(_ranked_results_for_explain or [], final_results)
             return {

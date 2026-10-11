@@ -478,6 +478,8 @@ def test_credentialed_http_endpoint_refused_before_any_request(monkeypatch):
     monkeypatch.setenv("MNEMOSYNE_EMBEDDING_API_URL", "http://127.0.0.1:9/v1")
     monkeypatch.setenv("MNEMOSYNE_EMBEDDINGS_VIA_API", "1")
     monkeypatch.setattr(embeddings, "_OPENAI_API_KEY", "secret-key")
+    monkeypatch.setattr(embeddings, "_ANNOUNCED_POLICY_REFUSALS", set())
+    monkeypatch.setattr(embeddings, "_LAST_POLICY_REFUSAL", None)
 
     def _no_request(*args, **kwargs):
         raise AssertionError("an HTTP request was attempted for a credentialed non-HTTPS endpoint")
@@ -496,6 +498,8 @@ def test_credentialed_redirect_refused_for_both_targets(monkeypatch):
 
     import mnemosyne.core.embeddings as embeddings
 
+    monkeypatch.setattr(embeddings, "_ANNOUNCED_POLICY_REFUSALS", set())
+    monkeypatch.setattr(embeddings, "_LAST_POLICY_REFUSAL", None)
     handler = embeddings._CredentialedNoRedirect()
     request = urllib.request.Request(
         "https://configured.example/v1/embeddings",
@@ -524,7 +528,7 @@ def test_credentialed_requests_use_the_no_redirect_opener(monkeypatch):
 
         class _NeverOpens:
             def open(self, *a, **k):
-                raise embeddings._EmbeddingPolicyError(
+                raise embeddings.EmbeddingPolicyError(
                     "no real request expected in this wiring test"
                 )
 
