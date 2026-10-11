@@ -58,15 +58,25 @@ def test_construct_with_resolvable_home_then_initialize_and_persist(
     assert provider._beam is None
     assert provider._bindings["default"]["beam"] is None
     target = tmp_path / "profile-b" if different_home else ambient
-    token = host.set_hermes_home_override(target)
+    token = None
     beam = None
     try:
+        # Keep ambient active: explicit hermes_home must choose the database,
+        # not merely agree with an already-switched host scope.
+        assert host.get_hermes_home() == ambient
         provider.initialize(
             "CONSTRUCTOR", hermes_home=str(target), agent_identity="profile-b",
             profile_isolation=profile_isolation, auto_sleep=False,
         )
         assert provider._init_error is None
         assert provider._init_home is None
+        assert host.get_hermes_home() == ambient
+        if different_home:
+            assert provider._beam is None
+            assert not (ambient / "mnemosyne").exists()
+        # Public writes run under the initialized home's host scope, with an
+        # explicit per-operation session; no unscoped session guarantee here.
+        token = host.set_hermes_home_override(target)
         beam = provider._beam
         assert beam is not None
         expected = target / "mnemosyne" / "data"
@@ -94,7 +104,8 @@ def test_construct_with_resolvable_home_then_initialize_and_persist(
         if different_home:
             assert not (ambient / "mnemosyne").exists()
     finally:
-        provider.shutdown()
-        if beam is not None:
-            beam.conn.close()
-        host.reset_hermes_home_override(token)
+        if token is not None:
+            provider.shutdown()
+            if beam is not None:
+                beam.conn.close()
+            host.reset_hermes_home_override(token)
