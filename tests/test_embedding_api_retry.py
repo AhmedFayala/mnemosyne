@@ -673,7 +673,11 @@ def test_policy_refusal_snapshot_survives_concurrent_clears(monkeypatch):
     monkeypatch.setattr(embeddings, "_OPENAI_API_KEY", "secret-key")
     monkeypatch.setattr(embeddings, "_ANNOUNCED_POLICY_REFUSALS", set())
     monkeypatch.setattr(embeddings, "_DEFAULT_MODEL", "openai/text-embedding-3-small")
-    embeddings._LAST_POLICY_REFUSAL = ("credentialed-redirect", "redirect to attacker.example")
+    # Seeded through monkeypatch so teardown restores the pre-test value
+    # even though the churner thread writes the global directly.
+    monkeypatch.setattr(
+        embeddings, "_LAST_POLICY_REFUSAL", ("credentialed-redirect", "redirect to attacker.example")
+    )
 
     stop = threading.Event()
 
@@ -701,7 +705,9 @@ def test_policy_refusal_silent_when_embeddings_disabled(monkeypatch):
     monkeypatch.setattr(embeddings, "_OPENAI_API_KEY", "secret-key")
     monkeypatch.setattr(embeddings, "_ANNOUNCED_POLICY_REFUSALS", set())
     monkeypatch.setattr(embeddings, "_DEFAULT_MODEL", "openai/text-embedding-3-small")
-    embeddings._LAST_POLICY_REFUSAL = ("credentialed-redirect", "redirect to attacker.example")
+    monkeypatch.setattr(
+        embeddings, "_LAST_POLICY_REFUSAL", ("credentialed-redirect", "redirect to attacker.example")
+    )
 
     assert "attacker.example" in embeddings.policy_refusal_message()
 
