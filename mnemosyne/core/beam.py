@@ -6808,8 +6808,7 @@ class BeamMemory:
         # keep-newest-N survivor set is the true newest by instant.
         # Pinned rows are exempt from trim (matching sleep()'s exemption):
         # they are neither TTL-deleted nor displaced from the survivor set.
-        self.conn.execute(f"""
-            DELETE FROM working_memory
+        trim_where = f"""
             WHERE session_id = ?
               AND consolidated_at IS NULL
               AND (pinned IS NULL OR pinned = 0)
@@ -6823,7 +6822,48 @@ class BeamMemory:
                     LIMIT ?
                 )
               )
-        """, (self.session_id, cutoff, self.session_id, WORKING_MEMORY_MAX_ITEMS))
+        """
+        params = (self.session_id, cutoff, self.session_id, WORKING_MEMORY_MAX_ITEMS)
+        # #1164: the wm_ad trigger clears only fts_working. vec_working
+        # (keyed by rowid) and the memory_embeddings fallback (keyed by id)
+        # are cleared here for the same rows: the trim set is read once
+        # and every delete uses it.
+        owner_tables = ["episodic_memory"]
+        if self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memories'"
+        ).fetchone() is not None:
+            owner_tables.append("memories")
+        # memory_embeddings carries only memory_id: keep the row while an
+        # episodic or legacy parent owns the same id (#1002).
+        other_owner = "".join(
+            f" AND NOT EXISTS (SELECT 1 FROM {table} WHERE {table}.id = memory_embeddings.memory_id)"
+            for table in owner_tables
+        )
+        owns_transaction = not self.conn.in_transaction
+        if owns_transaction:
+            # Take the write lock before reading the trim set: no other
+            # writer can consolidate or pin a selected row before the delete.
+            self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            trimmed = self.conn.execute(
+                f"SELECT rowid, id FROM working_memory {trim_where}", params
+            ).fetchall()
+            if trimmed:
+                rowids = [(row[0],) for row in trimmed]
+                if _wm_vec_available(self.conn):
+                    self.conn.executemany("DELETE FROM vec_working WHERE rowid = ?", rowids)
+                self.conn.executemany("DELETE FROM working_memory WHERE rowid = ?", rowids)
+                self.conn.executemany(
+                    "DELETE FROM memory_embeddings WHERE memory_id = ?" + other_owner,
+                    [(row[1],) for row in trimmed],
+                )
+        except Exception:
+            if owns_transaction:
+                try:
+                    self.conn.rollback()
+                except sqlite3.Error:
+                    pass  # rollback of a dead connection must not mask the cause
+            raise
         self.conn.commit()
 
     def get_context(self, limit: int = 10) -> List[Dict]:
