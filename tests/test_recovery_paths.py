@@ -510,15 +510,15 @@ class TestBackupAndStagingRaces:
         assert Path(prior_backup["backup_path"]).exists()
 
         rotation_ran = _threading.Event()
-        real_fsync = recovery._fsync_path
+        real_flush_and_fsync = recovery._flush_and_fsync
 
-        def slow_fsync(path):
-            if ".staging-" in str(path) and not rotation_ran.is_set():
+        def slow_fsync(handle):
+            if ".staging-" in str(handle.name) and not rotation_ran.is_set():
                 rotation_ran.set()
                 recovery.rotate_backups(bdir, keep=0)
-            return real_fsync(path)
+            return real_flush_and_fsync(handle)
 
-        monkeypatch.setattr(recovery, "_fsync_path", slow_fsync)
+        monkeypatch.setattr(recovery, "_flush_and_fsync", slow_fsync)
 
         new_backup = recovery.create_backup(db_path=db_path, backup_dir=bdir)
 
@@ -547,6 +547,107 @@ class TestBackupAndStagingRaces:
 
         leftovers = list(target.parent.glob("*restore_staged*"))
         assert leftovers == [], f"staged file not cleaned up: {leftovers}"
+
+
+# ---------------------------------------------------------------------------
+# #1160: on Windows os.fsync maps to FlushFileBuffers, which needs a handle
+# with write access, and os.O_DIRECTORY does not exist. Backup staging files
+# are fsynced through the handles that wrote them, and a missing O_DIRECTORY
+# skips the directory fsync instead of raising after publication.
+# ---------------------------------------------------------------------------
+
+import errno as _errno
+
+
+def _require_write_access_for_fsync(monkeypatch):
+    """Make os.fsync refuse descriptors opened without write access, as
+    FlushFileBuffers does on Windows. Returns the list of synced inodes."""
+    fcntl = pytest.importorskip("fcntl")
+    real_fsync = os.fsync
+    synced_inodes = []
+
+    def fsync(fd):
+        if fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE == os.O_RDONLY:
+            raise OSError(_errno.EBADF, os.strerror(_errno.EBADF))
+        synced_inodes.append(os.fstat(fd).st_ino)
+        return real_fsync(fd)
+
+    monkeypatch.setattr(recovery.os, "fsync", fsync)
+    return synced_inodes
+
+
+def test_backup_fsyncs_staging_files_through_writable_handles(tmp_path, monkeypatch):
+    db_path = tmp_path / "src.db"
+    _make_db_simple(db_path)
+    synced_inodes = _require_write_access_for_fsync(monkeypatch)
+
+    backup = recovery.create_backup(db_path=db_path, backup_dir=tmp_path / "bk")
+
+    backup_path = Path(backup["backup_path"])
+    meta_path = Path(backup["metadata_path"])
+    # os.replace keeps the inode, so the published files are the synced ones.
+    assert backup_path.stat().st_ino in synced_inodes
+    assert meta_path.stat().st_ino in synced_inodes
+    assert recovery._file_sha256(backup_path)[:16] == backup["backup_checksum"]
+    dump = _gzip.decompress(backup_path.read_bytes())
+    assert hashlib.sha256(dump).hexdigest() == backup["dump_checksum"]
+    metadata = {
+        key: value
+        for key, value in backup.items()
+        if key not in ("backup_path", "metadata_path")
+    }
+    assert json.loads(meta_path.read_text()) == metadata
+
+
+def test_backup_staging_fsync_failure_publishes_nothing(tmp_path, monkeypatch):
+    db_path = tmp_path / "src.db"
+    bdir = tmp_path / "bk"
+    _make_db_simple(db_path)
+
+    def failing_fsync(fd):
+        raise OSError(_errno.EIO, "simulated staging fsync failure")
+
+    monkeypatch.setattr(recovery.os, "fsync", failing_fsync)
+
+    with pytest.raises(OSError, match="simulated staging fsync failure"):
+        recovery.create_backup(db_path=db_path, backup_dir=bdir)
+
+    assert list(bdir.iterdir()) == []
+
+
+def test_backup_without_o_directory_returns_published_backup(tmp_path, monkeypatch):
+    db_path = tmp_path / "src.db"
+    _make_db_simple(db_path)
+    monkeypatch.delattr(recovery.os, "O_DIRECTORY", raising=False)
+
+    backup = recovery.create_backup(db_path=db_path, backup_dir=tmp_path / "bk")
+
+    assert Path(backup["backup_path"]).exists()
+    assert Path(backup["metadata_path"]).exists()
+    assert sorted(p.name for p in (tmp_path / "bk").iterdir()) == sorted(
+        [Path(backup["backup_path"]).name, Path(backup["metadata_path"]).name]
+    )
+
+
+def test_restore_without_o_directory_reports_success(tmp_path, monkeypatch):
+    db_path = tmp_path / "src.db"
+    _make_db_simple(db_path)
+    backup = recovery.create_backup(db_path=db_path, backup_dir=tmp_path / "bk")
+    target = tmp_path / "target.db"
+    _make_db_simple(target)
+    conn = sqlite3.connect(str(target))
+    conn.execute("INSERT INTO t VALUES (99, 'replaced')")
+    conn.commit()
+    conn.close()
+    monkeypatch.delattr(recovery.os, "O_DIRECTORY", raising=False)
+
+    result = recovery.restore_backup(Path(backup["backup_path"]), target)
+
+    assert result["restored"] is True
+    conn = sqlite3.connect(str(target))
+    rows = conn.execute("SELECT id, v FROM t ORDER BY id").fetchall()
+    conn.close()
+    assert rows == [(1, "a"), (2, "b")]
 
 
 # ---------------------------------------------------------------------------
