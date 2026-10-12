@@ -6808,8 +6808,7 @@ class BeamMemory:
         # keep-newest-N survivor set is the true newest by instant.
         # Pinned rows are exempt from trim (matching sleep()'s exemption):
         # they are neither TTL-deleted nor displaced from the survivor set.
-        self.conn.execute(f"""
-            DELETE FROM working_memory
+        trim_where = f"""
             WHERE session_id = ?
               AND consolidated_at IS NULL
               AND (pinned IS NULL OR pinned = 0)
@@ -6823,8 +6822,81 @@ class BeamMemory:
                     LIMIT ?
                 )
               )
-        """, (self.session_id, cutoff, self.session_id, WORKING_MEMORY_MAX_ITEMS))
-        self.conn.commit()
+        """
+        params = (self.session_id, cutoff, self.session_id, WORKING_MEMORY_MAX_ITEMS)
+        # #1164: the wm_ad trigger clears only fts_working. vec_working
+        # (keyed by rowid) and the memory_embeddings fallback (keyed by id)
+        # are cleared here for the same rows: the trim set is read once
+        # and every delete uses it.
+        owner_tables = ["episodic_memory"]
+        if self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memories'"
+        ).fetchone() is not None:
+            owner_tables.append("memories")
+        # memory_embeddings carries only memory_id: keep the row while an
+        # episodic or legacy parent owns the same id (#1002).
+        other_owner = "".join(
+            f" AND NOT EXISTS (SELECT 1 FROM {table} WHERE {table}.id = memory_embeddings.memory_id)"
+            for table in owner_tables
+        )
+        owns_transaction = not self.conn.in_transaction
+        savepoint = None
+        if owns_transaction:
+            # Take the write lock before reading the trim set: no other
+            # writer can consolidate or pin a selected row before the delete.
+            self.conn.execute("BEGIN IMMEDIATE")
+        else:
+            # Caller-owned transaction: isolate the trim in its own
+            # savepoint, so it neither commits the caller's writes nor
+            # leaves partial deletes behind when it fails.
+            if isinstance(self.conn, _BeamConnection):
+                savepoint = self.conn._next_savepoint_name("trim_working")
+            else:
+                savepoint = "mnemosyne_trim_working"
+            self.conn.execute(f"SAVEPOINT {savepoint}")
+        try:
+            trimmed = self.conn.execute(
+                f"SELECT rowid, id FROM working_memory {trim_where}", params
+            ).fetchall()
+            vec_on = _wm_vec_available(self.conn)
+            if trimmed and not vec_on and _vec_table_exists(self.conn, "vec_working"):
+                # A persisted vec_working this connection cannot read (e.g.
+                # sqlite-vec not loadable): deleting the working rows would
+                # orphan their vectors for good. Keep them; the next trim on
+                # a connection with sqlite-vec removes both. Raising instead
+                # would fail remember() after its row is already committed.
+                if not getattr(self, "_trim_vec_unavailable_warned", False):
+                    logger.warning(
+                        "Working-memory trim skipped: vec_working exists but "
+                        "sqlite-vec is unavailable on this connection"
+                    )
+                    self._trim_vec_unavailable_warned = True
+                trimmed = []
+            if trimmed:
+                rowids = [(row[0],) for row in trimmed]
+                if vec_on:
+                    self.conn.executemany("DELETE FROM vec_working WHERE rowid = ?", rowids)
+                self.conn.executemany("DELETE FROM working_memory WHERE rowid = ?", rowids)
+                self.conn.executemany(
+                    "DELETE FROM memory_embeddings WHERE memory_id = ?" + other_owner,
+                    [(row[1],) for row in trimmed],
+                )
+            # Inside the try: a failed commit (e.g. a deferred foreign key)
+            # rolls all three deletes back instead of leaving them staged.
+            if savepoint is None:
+                self.conn.commit()
+            else:
+                self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        except Exception:
+            try:
+                if savepoint is None:
+                    self.conn.rollback()
+                else:
+                    self.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                    self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            except sqlite3.Error:
+                pass  # a failed rollback must not mask the original error
+            raise
 
     def get_context(self, limit: int = 10) -> List[Dict]:
         """Get working_memory for prompt injection.
