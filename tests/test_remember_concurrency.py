@@ -14,9 +14,13 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
+from queue import Empty
 from typing import List
 
 import pytest
+
+# Each worker writes this many probes; the store must end up with 2x that.
+_WRITES_PER_WORKER = 8
 
 
 def _remember_worker(
@@ -48,7 +52,7 @@ def _remember_worker(
         return
 
     statuses: List[str] = []
-    for i in range(8):
+    for i in range(_WRITES_PER_WORKER):
         while time.time() < start + i:
             time.sleep(0.001)
         try:
@@ -106,16 +110,37 @@ def test_remember_two_processes_lockstep_no_lost_writes(db_dir: str) -> None:
     proc_b = ctx.Process(target=_remember_worker, args=(db_dir, "B", start, queue))
     proc_a.start()
     proc_b.start()
-    proc_a.join(timeout=60)
-    proc_b.join(timeout=60)
+    for proc in (proc_a, proc_b):
+        proc.join(timeout=60)
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(timeout=10)
+            pytest.fail(f"worker {proc.name} hung and had to be terminated")
 
+    for proc in (proc_a, proc_b):
+        assert proc.exitcode == 0, (
+            f"worker {proc.name} crashed with exitcode {proc.exitcode} "
+            "before reporting its writes"
+        )
+
+    # Read exactly one report per worker: queue.empty() is unreliable while a
+    # message is still in transit, and a crashed worker never puts one.
     results: dict[str, List[str]] = {}
-    while not queue.empty():
-        name, statuses = queue.get_nowait()
+    for _ in range(2):
+        try:
+            name, statuses = queue.get(timeout=10)
+        except Empty:
+            pytest.fail(
+                f"only {len(results)} of 2 workers reported: {sorted(results)}"
+            )
         results[name] = statuses
 
     for name in ("A", "B"):
         statuses = results.get(name, [])
+        assert len(statuses) == _WRITES_PER_WORKER, (
+            f"process {name} reported {len(statuses)} of "
+            f"{_WRITES_PER_WORKER} writes: {statuses[:3]}"
+        )
         failures = [s for s in statuses if not s.startswith("ok")]
         assert not failures, (
             f"process {name} raised under contention: {failures[:3]}"
@@ -130,6 +155,7 @@ def test_remember_two_processes_lockstep_no_lost_writes(db_dir: str) -> None:
     finally:
         conn.close()
 
-    assert count == 16, (
-        f"expected 16 committed probe rows, got {count} -- writes lost to race"
+    expected = 2 * _WRITES_PER_WORKER
+    assert count == expected, (
+        f"expected {expected} committed probe rows, got {count} -- writes lost"
     )
