@@ -112,10 +112,19 @@ def test_remember_two_processes_lockstep_no_lost_writes(db_dir: str) -> None:
     proc_b.start()
     for proc in (proc_a, proc_b):
         proc.join(timeout=60)
-        if proc.is_alive():
-            proc.terminate()
-            proc.join(timeout=10)
-            pytest.fail(f"worker {proc.name} hung and had to be terminated")
+
+    # Reap every live worker before failing: pytest.fail raises out of the
+    # test, so a worker left alive here would outlive the run.
+    hung = [proc for proc in (proc_a, proc_b) if proc.is_alive()]
+    for proc in hung:
+        proc.terminate()
+    for proc in hung:
+        proc.join(timeout=10)
+    if hung:
+        pytest.fail(
+            "workers hung and had to be terminated: "
+            + ", ".join(proc.name for proc in hung)
+        )
 
     for proc in (proc_a, proc_b):
         assert proc.exitcode == 0, (
