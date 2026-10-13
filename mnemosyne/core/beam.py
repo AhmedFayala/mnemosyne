@@ -2378,10 +2378,13 @@ def _write_locked_transaction(
     rolls back that enclosing caller transaction. (Callers further down the
     stack -- notably ``BeamMemory.remember`` -- may still commit it.)
 
-    ``BEGIN IMMEDIATE`` may be retried a bounded number of times for locks
+    ``BEGIN IMMEDIATE`` is retried up to ``max_attempts`` times for locks
     held longer than the configured ``busy_timeout`` (e.g. a long
-    consolidation pass). The retry is bounded so a permanently stuck lock
-    still fails closed rather than blocking forever.
+    consolidation pass). Every attempt consults the busy handler, so a lock
+    held throughout costs up to ``max_attempts * busy_timeout`` plus the
+    backoff -- about 15 s with the defaults (3 x 5000 ms + 150 ms), not
+    5 s + 150 ms. A permanently stuck lock still fails closed rather than
+    blocking forever: the caller sees the final ``SQLITE_BUSY``.
     """
     savepoint: Optional[str] = None
     started_tx = False
