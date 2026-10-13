@@ -499,7 +499,36 @@ mnemosyne doctor --bank default \
   --markdown-out mnemosyne-doctor.md
 ```
 
-`mnemosyne repair` is intentionally narrow and report-gated, not a global cleanup command. Review the Doctor report, select only the candidate you intend to act on, and run a dry run first:
+`mnemosyne repair` is Linux-only, intentionally narrow and report-gated, not a global cleanup command. Review the Doctor report, select only the candidate you intend to act on, and run a dry run first:
+
+For repair, use a disposable **consistent offline copy** on verified native Linux
+storage. Copying only the main file of a live WAL database does not guarantee a
+consistent copy: committed pages may still be in WAL. Do not delete WAL/SHM files
+or silently checkpoint a live bank to bypass a refusal. Trigger semantics and
+WAL/snapshot policy remain separate decisions (#1040 D2/D3).
+
+Apply requires a private staging directory whose requested POSIX mode is actually
+0700, on the same device as the authorized database, and working
+`linkat(AT_EMPTY_PATH)` FD linking. The resulting regular file must retain the
+authorized `(st_dev, st_ino)` identity and have at least two links. These checks
+remain fail-closed; there is no chmod or alternate-binding fallback.
+
+In the #1040 reporter's WSL setup, default 9p/drvfs automounts without `metadata`,
+`umask` or `dmask` returned stage mode 0777 and were correctly refused. The distro's
+own ext4 storage passed binding (the reporter's `$HOME` was an example, not a
+promise that every home directory is native ext4). Metadata-enabled drvfs and
+device identity across a WSL restart remain untested.
+
+Binding diagnostics identify the failed gate or operation and symbolic/numeric
+errno when available, without including paths or raw OS error text. A linkat
+`ENOENT`, `EPERM` or `EACCES` is an observed syscall result, not proof of capability
+denial; `EIO` is an I/O failure, not proof of an unsupported filesystem. An
+unavailable operation may have no errno. Do not infer a capability or filesystem
+cause from these results alone.
+
+**Dry-run does not bind the database or create link capability probes.** It plans
+selected actions without certifying apply's mode, device or FD-link compatibility.
+Alternate binding remains a separate security/storage decision (#1040 D4).
 
 ```bash
 mnemosyne repair \
