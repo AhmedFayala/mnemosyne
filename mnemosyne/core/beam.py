@@ -16,11 +16,13 @@ Hybrid ranking: 50% vector + 30% FTS rank + 20% importance.
 from __future__ import annotations
 
 import contextlib
+import itertools
 import logging
 import sqlite3
 import json
 import hashlib
 import threading
+import time
 import math
 import operator
 from dataclasses import dataclass, field
@@ -2347,6 +2349,91 @@ def _guarded_transaction(conn: sqlite3.Connection):
         except sqlite3.Error:
             pass  # rollback of a dead connection must not mask the cause
         raise
+
+
+def _is_busy_error(exc: sqlite3.OperationalError) -> bool:
+    """True when SQLite raised SQLITE_BUSY (database is locked)."""
+    if getattr(exc, "sqlite_errorname", None) == "SQLITE_BUSY":
+        return True
+    return getattr(exc, "sqlite_errorcode", None) == sqlite3.SQLITE_BUSY
+
+
+_plain_savepoint_counter = itertools.count(1)
+
+
+@contextlib.contextmanager
+def _write_locked_transaction(
+    conn: sqlite3.Connection, *, max_attempts: int = 3
+):
+    """Run a block inside a transaction that holds the SQLite writer lock.
+
+    When *conn* is not already in a transaction, open it with
+    ``BEGIN IMMEDIATE`` so SQLite's busy handler is consulted while acquiring
+    the writer lock. This closes the WAL stale-snapshot upgrade window where
+    a deferred transaction's SELECT-then-INSERT returns ``SQLITE_BUSY``
+    immediately (see mnemosyne-oss/mnemosyne#1147).
+
+    When the caller already owns a transaction, the block is isolated in a
+    savepoint owned by this helper; the helper itself neither commits nor
+    rolls back that enclosing caller transaction. (Callers further down the
+    stack -- notably ``BeamMemory.remember`` -- may still commit it.)
+
+    ``BEGIN IMMEDIATE`` may be retried a bounded number of times for locks
+    held longer than the configured ``busy_timeout`` (e.g. a long
+    consolidation pass). The retry is bounded so a permanently stuck lock
+    still fails closed rather than blocking forever.
+    """
+    savepoint: Optional[str] = None
+    started_tx = False
+    owns_savepoint = False
+
+    if conn.in_transaction:
+        if isinstance(conn, _BeamConnection):
+            savepoint = conn._next_savepoint_name("write_locked")
+        else:
+            # Plain sqlite3 connection: module-level counter. next() yields a
+            # fresh name for every call, so nested invocations stay distinct.
+            savepoint = f"mnemosyne_write_lock_{next(_plain_savepoint_counter)}"
+        conn.execute(f"SAVEPOINT {savepoint}")
+        owns_savepoint = True
+    else:
+        for attempt in range(max_attempts):
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                started_tx = True
+                break
+            except sqlite3.OperationalError as exc:
+                if _is_busy_error(exc) and attempt + 1 < max_attempts:
+                    time.sleep(0.05 * (2 ** attempt))
+                    continue
+                raise
+
+    try:
+        yield
+    except Exception:
+        try:
+            if owns_savepoint:
+                conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            elif started_tx:
+                conn.rollback()
+        except sqlite3.Error:
+            pass  # rollback of a dead connection must not mask the cause
+        raise
+    else:
+        try:
+            if owns_savepoint:
+                conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            elif started_tx:
+                conn.commit()
+        except sqlite3.Error:
+            # If finalization fails, roll back any transaction we opened.
+            try:
+                if started_tx:
+                    conn.rollback()
+            except sqlite3.Error:
+                pass
+            raise
 
 
 @contextlib.contextmanager
@@ -6104,46 +6191,67 @@ class BeamMemory:
                 pass  # Classifier failures are non-blocking
 
         # --- Deduplication: exact match ---
-        existing_id = self._find_duplicate(content) if dedupe else None
+        # Dedup-update clears consolidated_at so a re-remembered row
+        # becomes eligible for sleep again. Without this, an already-
+        # consolidated row that the user reasserts is permanently
+        # skipped -- its fresher timestamp/source/scope never produces
+        # a fresh summary. Pre-E3 this scenario didn't exist because
+        # consolidated rows were deleted; the additive design has to
+        # opt back in.
+        # E4.a.1 review fix (P1): refresh veracity on dedup-update too.
+        # Without this, a row first stored as 'unknown' and later
+        # re-remembered as 'stated' kept the stale 'unknown' label,
+        # which E4.a.1's sleep-time aggregator then propagates into
+        # the episodic summary -- defeating the trust-signal refresh.
+        # Conservative policy: only upgrade if the new call passes a
+        # non-'unknown' veracity (preserves per-row trust on
+        # backfills that don't carry a meaningful veracity arg).
+        #
+        # Run the duplicate check and the working_memory write inside a
+        # write-lock-holding transaction. In WAL mode a deferred transaction
+        # that SELECTs then INSERTs can hit SQLITE_BUSY during snapshot
+        # upgrade while the busy handler is not consulted, dropping the write
+        # under contention (#1147). BEGIN IMMEDIATE (or a savepoint inside a
+        # caller-owned transaction) serializes the read/write pair.
+        with _write_locked_transaction(self.conn):
+            existing_id = self._find_duplicate(content) if dedupe else None
+            if existing_id:
+                cursor = self.conn.cursor()
+                cursor.execute("""
+                    UPDATE working_memory
+                    SET importance = MAX(importance, ?), timestamp = ?, source = ?,
+                        valid_until = COALESCE(?, valid_until),
+                        scope = COALESCE(?, scope),
+                        author_id = COALESCE(?, author_id),
+                        author_type = COALESCE(?, author_type),
+                        channel_id = COALESCE(?, channel_id),
+                        memory_type = COALESCE(?, memory_type),
+                        veracity = CASE WHEN ? != 'unknown' THEN ? ELSE veracity END,
+                        trust_tier = COALESCE(?, trust_tier),
+                        consolidated_at = NULL,
+                        consolidation_claimed_at = NULL
+                    WHERE id = ? AND session_id = ?
+                """, (importance, datetime.now(timezone.utc).replace(tzinfo=None).isoformat(), source,
+                      valid_until, scope,
+                      self.author_id, self.author_type, self.channel_id,
+                      memory_type,
+                      veracity, veracity,
+                      trust_tier,
+                      existing_id, self.session_id))
+            else:
+                memory_id = memory_id or _generate_id(content)
+                timestamp = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+                cursor = self.conn.cursor()
+                cursor.execute("""
+                    INSERT INTO working_memory
+                    (id, content, source, timestamp, session_id, importance, metadata_json, valid_until, scope,
+                     author_id, author_type, channel_id, veracity, memory_type, trust_tier)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (memory_id, content, source, timestamp, self.session_id, importance,
+                      json.dumps(metadata or {}), valid_until, scope,
+                      self.author_id, self.author_type, self.channel_id, veracity, memory_type, trust_tier))
+
         if existing_id:
-            cursor = self.conn.cursor()
-            # Dedup-update clears consolidated_at so a re-remembered row
-            # becomes eligible for sleep again. Without this, an already-
-            # consolidated row that the user reasserts is permanently
-            # skipped -- its fresher timestamp/source/scope never produces
-            # a fresh summary. Pre-E3 this scenario didn't exist because
-            # consolidated rows were deleted; the additive design has to
-            # opt back in.
-            # E4.a.1 review fix (P1): refresh veracity on dedup-update too.
-            # Without this, a row first stored as 'unknown' and later
-            # re-remembered as 'stated' kept the stale 'unknown' label,
-            # which E4.a.1's sleep-time aggregator then propagates into
-            # the episodic summary -- defeating the trust-signal refresh.
-            # Conservative policy: only upgrade if the new call passes a
-            # non-'unknown' veracity (preserves per-row trust on
-            # backfills that don't carry a meaningful veracity arg).
-            cursor.execute("""
-                UPDATE working_memory
-                SET importance = MAX(importance, ?), timestamp = ?, source = ?,
-                    valid_until = COALESCE(?, valid_until),
-                    scope = COALESCE(?, scope),
-                    author_id = COALESCE(?, author_id),
-                    author_type = COALESCE(?, author_type),
-                    channel_id = COALESCE(?, channel_id),
-                    memory_type = COALESCE(?, memory_type),
-                    veracity = CASE WHEN ? != 'unknown' THEN ? ELSE veracity END,
-                    trust_tier = COALESCE(?, trust_tier),
-                    consolidated_at = NULL,
-                    consolidation_claimed_at = NULL
-                WHERE id = ? AND session_id = ?
-            """, (importance, datetime.now(timezone.utc).replace(tzinfo=None).isoformat(), source,
-                  valid_until, scope,
-                  self.author_id, self.author_type, self.channel_id,
-                  memory_type,
-                  veracity, veracity,
-                  trust_tier,
-                  existing_id, self.session_id))
-            self.conn.commit()
             # Cache failures must not turn a committed dedup update into a retry.
             self._invalidate_query_cache_after_remember_commit()
             try:
@@ -6177,18 +6285,6 @@ class BeamMemory:
                 # Enrichment can refill enhanced recall after the early post-commit eviction.
                 self._invalidate_query_cache_after_remember_commit()
 
-        memory_id = memory_id or _generate_id(content)
-        timestamp = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
-        cursor = self.conn.cursor()
-        cursor.execute("""
-            INSERT INTO working_memory
-            (id, content, source, timestamp, session_id, importance, metadata_json, valid_until, scope,
-             author_id, author_type, channel_id, veracity, memory_type, trust_tier)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (memory_id, content, source, timestamp, self.session_id, importance,
-              json.dumps(metadata or {}), valid_until, scope,
-              self.author_id, self.author_type, self.channel_id, veracity, memory_type, trust_tier))
-        self.conn.commit()
         try:
             self._trim_working_memory()
         finally:

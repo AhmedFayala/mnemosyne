@@ -1,0 +1,135 @@
+"""
+Regression test for mnemosyne-oss/mnemosyne#1147.
+
+Two processes write to the same Mnemosyne database in lockstep.
+Pre-fix, the deferred-transaction snapshot upgrade returns SQLITE_BUSY
+immediately and the write is dropped. Post-fix, the write path takes
+the writer lock with BEGIN IMMEDIATE and all writes land.
+"""
+from __future__ import annotations
+
+import multiprocessing
+import os
+import sqlite3
+import time
+import uuid
+from pathlib import Path
+from typing import List
+
+import pytest
+
+
+def _remember_worker(
+    db_dir: str,
+    name: str,
+    start: float,
+    result_queue: "multiprocessing.Queue",
+) -> None:
+    """Child-process worker: write one probe per second for 8 seconds."""
+    os.environ["MNEMOSYNE_DATA_DIR"] = db_dir
+    os.environ["MNEMOSYNE_CHANNEL_ID"] = name
+    os.environ["MNEMOSYNE_NO_EMBEDDINGS"] = "1"
+
+    # Import here so the child sees the env vars before any module init.
+    from mnemosyne.mcp_tools import handle_tool_call
+
+    # Slight stagger so the two processes do not hit the exact same millisecond.
+    if name == "B":
+        time.sleep(0.5)
+
+    # Warmup creates the per-process connection and schema if needed.
+    try:
+        handle_tool_call(
+            "mnemosyne_remember",
+            {"content": f"warmup {name}", "importance": 0.1},
+        )
+    except Exception as exc:
+        result_queue.put((name, [f"warmup-exc:{exc}"]))
+        return
+
+    statuses: List[str] = []
+    for i in range(8):
+        while time.time() < start + i:
+            time.sleep(0.001)
+        try:
+            handle_tool_call(
+                "mnemosyne_remember",
+                {
+                    "content": f"probe {name} {i} {uuid.uuid4().hex[:6]}",
+                    "importance": 0.1,
+                },
+            )
+            statuses.append("ok")
+        except Exception as exc:
+            statuses.append(f"EXC:{exc}")
+
+    result_queue.put((name, statuses))
+
+
+@pytest.fixture
+def db_dir(tmp_path: Path) -> str:
+    """Create a shared DB, seeded once in the parent process."""
+    d = str(tmp_path / "concurrency")
+    os.makedirs(d, exist_ok=True)
+
+    old_data = os.environ.get("MNEMOSYNE_DATA_DIR")
+    old_no_emb = os.environ.get("MNEMOSYNE_NO_EMBEDDINGS")
+    try:
+        os.environ["MNEMOSYNE_DATA_DIR"] = d
+        os.environ["MNEMOSYNE_NO_EMBEDDINGS"] = "1"
+        from mnemosyne.mcp_tools import handle_tool_call
+
+        handle_tool_call(
+            "mnemosyne_remember",
+            {"content": "seed", "importance": 0.1},
+        )
+    finally:
+        if old_data is None:
+            os.environ.pop("MNEMOSYNE_DATA_DIR", None)
+        else:
+            os.environ["MNEMOSYNE_DATA_DIR"] = old_data
+        if old_no_emb is None:
+            os.environ.pop("MNEMOSYNE_NO_EMBEDDINGS", None)
+        else:
+            os.environ["MNEMOSYNE_NO_EMBEDDINGS"] = old_no_emb
+
+    return d
+
+
+def test_remember_two_processes_lockstep_no_lost_writes(db_dir: str) -> None:
+    """Pre-fix this test loses writes to SQLITE_BUSY; post-fix all 16 land."""
+    ctx = multiprocessing.get_context("spawn")
+    queue: multiprocessing.Queue = ctx.Queue()
+    start = time.time() + 0.5
+
+    proc_a = ctx.Process(target=_remember_worker, args=(db_dir, "A", start, queue))
+    proc_b = ctx.Process(target=_remember_worker, args=(db_dir, "B", start, queue))
+    proc_a.start()
+    proc_b.start()
+    proc_a.join(timeout=60)
+    proc_b.join(timeout=60)
+
+    results: dict[str, List[str]] = {}
+    while not queue.empty():
+        name, statuses = queue.get_nowait()
+        results[name] = statuses
+
+    for name in ("A", "B"):
+        statuses = results.get(name, [])
+        failures = [s for s in statuses if not s.startswith("ok")]
+        assert not failures, (
+            f"process {name} raised under contention: {failures[:3]}"
+        )
+
+    db_path = Path(db_dir) / "mnemosyne.db"
+    conn = sqlite3.connect(str(db_path))
+    try:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM working_memory WHERE content LIKE 'probe %'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert count == 16, (
+        f"expected 16 committed probe rows, got {count} -- writes lost to race"
+    )
