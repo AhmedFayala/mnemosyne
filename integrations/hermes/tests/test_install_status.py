@@ -693,7 +693,7 @@ def test_provider_diagnostic_reports_two_venvs_over_one_base(
     _, hermes_python, this_venv, this_python = _two_venvs_over_one_base(tmp_path)
 
     def _boom(*args, **kwargs):
-        raise RuntimeError("construction failed for test")
+        raise ModuleNotFoundError("No module named 'mnemosyne'", name="mnemosyne")
 
     class _Ctx:
         def register_memory_provider(self, provider):
@@ -709,7 +709,7 @@ def test_provider_diagnostic_reports_two_venvs_over_one_base(
     monkeypatch.setattr(sys, "executable", str(this_python))
     monkeypatch.setattr(sys, "prefix", str(this_venv))
 
-    with pytest.raises(RuntimeError, match="construction failed for test"):
+    with pytest.raises(ModuleNotFoundError, match="No module named 'mnemosyne'"):
         mnemosyne_hermes.register_memory_provider(_Ctx())
 
     err = capsys.readouterr().err
@@ -719,6 +719,48 @@ def test_provider_diagnostic_reports_two_venvs_over_one_base(
         f"FIX: Run: {shlex.quote(str(hermes_python))}"
         " -m pip install -U 'mnemosyne-hermes[all]'" in err
     )
+
+
+def test_provider_diagnostic_omits_install_hint_for_non_import_failure(
+    tmp_path, monkeypatch, capsys
+):
+    """#1178: a constructor error that no install can fix got the pip hint.
+
+    A binding refusal raised during construction printed
+    ``FIX: Run: ... pip install -U 'mnemosyne-hermes[all]'`` whenever the
+    interpreters differed, although extras do not change constructor
+    ordering. The interpreter line stays; the install hint is printed only
+    for an ImportError, and the original exception still propagates.
+    """
+    if sys.platform.startswith("win32"):
+        pytest.skip("POSIX symlink test")
+    _, hermes_python, this_venv, this_python = _two_venvs_over_one_base(tmp_path)
+    failure = RuntimeError(
+        "Mnemosyne: no binding for the current home '/home/user/.hermes'; "
+        "refusing to write through another home's binding."
+    )
+
+    def _boom(*args, **kwargs):
+        raise failure
+
+    class _Ctx:
+        def register_memory_provider(self, provider):
+            raise AssertionError("must not register when construction fails")
+
+    monkeypatch.setattr(mnemosyne_hermes, "MnemosyneMemoryProvider", _boom)
+    monkeypatch.setattr(install, "_find_hermes_python", lambda **kw: hermes_python)
+    monkeypatch.setattr(sys, "executable", str(this_python))
+    monkeypatch.setattr(sys, "prefix", str(this_venv))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        mnemosyne_hermes.register_memory_provider(_Ctx())
+
+    assert excinfo.value is failure
+    err = capsys.readouterr().err
+    assert f"MnemosyneMemoryProvider() failed: {failure}" in err
+    assert f"Hermes' Python: {hermes_python}" in err
+    assert "FIX: Run:" not in err
+    assert "mnemosyne-hermes[all]" not in err
 
 
 def test_provider_diagnostic_stays_quiet_for_one_environment(
