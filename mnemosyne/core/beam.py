@@ -2378,6 +2378,13 @@ def _write_locked_transaction(
     rolls back that enclosing caller transaction. (Callers further down the
     stack -- notably ``BeamMemory.remember`` -- may still commit it.)
 
+    The serialization guarantee above comes from acquiring ``BEGIN IMMEDIATE``.
+    A savepoint inside a caller-owned *deferred* transaction takes no writer
+    lock, so a write made there can still fail with ``SQLITE_BUSY_SNAPSHOT``
+    when the caller's read snapshot is stale. Serializing those writes, and
+    rolling the caller transaction back after that error, stays the caller's
+    responsibility.
+
     ``BEGIN IMMEDIATE`` is retried up to ``max_attempts`` times for locks
     held longer than the configured ``busy_timeout`` (e.g. a long
     consolidation pass). Every attempt consults the busy handler, so a lock
