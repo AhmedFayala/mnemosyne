@@ -499,7 +499,7 @@ mnemosyne doctor --bank default \
   --markdown-out mnemosyne-doctor.md
 ```
 
-`mnemosyne repair` is Linux-only, intentionally narrow and report-gated, not a global cleanup command. Review the Doctor report, select only the candidate you intend to act on, and run a dry run first:
+`mnemosyne repair` is Linux-only, intentionally narrow and report-gated, not a global cleanup command. Review the Doctor report, select only the candidate you intend to act on, and run a dry run first (example below).
 
 For repair, use a disposable **consistent offline copy** on verified native Linux
 storage. Copying only the main file of a live WAL database does not guarantee a
