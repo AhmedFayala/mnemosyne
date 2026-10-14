@@ -5154,12 +5154,16 @@ def register_memory_provider(ctx):
                     f"[mnemosyne-hermes]   Hermes' Python: {_hp} ({_ver})",
                     file=_sys.stderr,
                 )
-                import shlex as _shlex
-                print(
-                    f"[mnemosyne-hermes]   FIX: Run: {_shlex.quote(str(_hp))}"
-                    " -m pip install -U 'mnemosyne-hermes[all]'",
-                    file=_sys.stderr,
-                )
+                # Installing into Hermes' Python only helps when construction
+                # failed on a missing import. Any other error (a binding
+                # refusal, a bad config value) is not fixed by extras (#1178).
+                if isinstance(_exc, ImportError):
+                    import shlex as _shlex
+                    print(
+                        f"[mnemosyne-hermes]   FIX: Run: {_shlex.quote(str(_hp))}"
+                        " -m pip install -U 'mnemosyne-hermes[all]'",
+                        file=_sys.stderr,
+                    )
         except Exception:
             pass
         raise
