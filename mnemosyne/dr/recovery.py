@@ -136,9 +136,17 @@ def _unique_staged_path(db_path: Path) -> Path:
 
 
 def _fsync_dir(path: Path) -> None:
-    """fsync a directory so rename/replace metadata reaches durable storage."""
+    """fsync a directory so rename/replace metadata reaches durable storage.
+
+    Platforms without ``os.O_DIRECTORY`` (Windows) cannot open a directory
+    for fsync, so the call is skipped there instead of raising after the
+    caller has already published its files.
+    """
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    if directory_flag is None:
+        return
     try:
-        fd = os.open(str(path), os.O_RDONLY | os.O_DIRECTORY)
+        fd = os.open(str(path), os.O_RDONLY | directory_flag)
     except (OSError, ValueError):
         return
     try:
@@ -147,6 +155,17 @@ def _fsync_dir(path: Path) -> None:
         pass
     finally:
         os.close(fd)
+
+
+def _flush_and_fsync(handle) -> None:
+    """Flush a file object opened for writing and fsync its own descriptor.
+
+    Windows maps ``os.fsync`` to ``FlushFileBuffers``, which needs a handle
+    with write access, so a staged file is synced through the handle that
+    wrote it rather than through a read-only reopen.
+    """
+    handle.flush()
+    os.fsync(handle.fileno())
 
 
 def create_backup(db_path: Path = None, backup_dir: Path = None) -> Dict:
@@ -204,8 +223,10 @@ def create_backup(db_path: Path = None, backup_dir: Path = None) -> Dict:
             src.close()
 
         dump_bytes = buf.getvalue()
-        with gzip.open(staged_backup_path, "wb") as f_out:
-            f_out.write(dump_bytes)
+        with open(staged_backup_path, "wb") as raw_out:
+            with gzip.GzipFile(fileobj=raw_out, mode="wb") as f_out:
+                f_out.write(dump_bytes)
+            _flush_and_fsync(raw_out)
 
         # Calculate checksums. ``dump_checksum`` covers the decompressed SQL dump
         # payload so restore can detect corruption that survives gzip decompression
@@ -229,9 +250,8 @@ def create_backup(db_path: Path = None, backup_dir: Path = None) -> Dict:
         # Save metadata to staging path then publish both atomically
         with open(staged_meta_path, "w") as f:
             json.dump(metadata, f, indent=2)
+            _flush_and_fsync(f)
 
-        _fsync_path(staged_backup_path)
-        _fsync_path(staged_meta_path)
         os.replace(staged_meta_path, meta_path)
         os.replace(staged_backup_path, backup_path)
         try:
