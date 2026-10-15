@@ -432,7 +432,7 @@ def _sanitize_hermes_machine_envelope(user_content: str) -> Optional[str]:
         return ""
 
     # Check for interrupted prompt first (preserves trailing interrupted human request)
-    if "The interrupted request was:" in text:
+    if re.match(r"^\[System\s+note:\s+(?:Your|The)\s+previous\s+turn\s+was\s+interrupted", text, re.IGNORECASE) and "The interrupted request was:" in text:
         tail = text.split("The interrupted request was:", 1)[1].lstrip("]\n ").strip()
         if tail:
             res = _sanitize_hermes_machine_envelope(tail)
@@ -507,7 +507,7 @@ def _sanitize_hermes_machine_envelope(user_content: str) -> Optional[str]:
             if end_marker in text:
                 tail = text.split(end_marker, 1)[1].strip()
                 if "--- END OF CONTEXT SUMMARY" in tail:
-                    tail = tail.split("--- END OF CONTEXT SUMMARY", 1)[1].lstrip(" — respond to the message below, not the summary above ---\n").strip()
+                    tail = tail.split("--- END OF CONTEXT SUMMARY", 1)[1].removeprefix(" — respond to the message below, not the summary above ---").strip()
                 return _sanitize_hermes_machine_envelope(tail) if tail else None
         if "\n\n" in text:
             tail = text.split("\n\n", 1)[1].strip()

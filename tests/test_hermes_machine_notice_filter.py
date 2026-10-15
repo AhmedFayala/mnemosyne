@@ -386,3 +386,17 @@ def test_sync_turn_no_verbatim_ledger_capture_on_machine_notice(provider):
     provider.sync_turn("A genuine user turn", "ok", session_id="test-session")
     assert ledger.capture.call_count == 2
 
+
+
+def test_interrupted_quote_in_human_text_not_truncated(provider_module):
+    # ponytail: regression for dplush r3 — precheck must only fire on the real system-note boundary
+    text = "Apa arti 'The interrupted request was: X' di log?"
+    assert provider_module._sanitize_hermes_machine_envelope(text) == text
+
+
+def test_context_compaction_tail_keeps_human_prompt_exactly(provider_module):
+    # ponytail: regression for dplush r3 — removeprefix, not char-set lstrip
+    text = ("[CONTEXT COMPACTION] Earlier turns were compacted.\n"
+            "--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---\n"
+            "solve this for me please")
+    assert provider_module._sanitize_hermes_machine_envelope(text) == "solve this for me please"
