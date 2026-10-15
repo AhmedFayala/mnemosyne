@@ -6221,8 +6221,10 @@ class BeamMemory:
         # write-lock-holding transaction. In WAL mode a deferred transaction
         # that SELECTs then INSERTs can hit SQLITE_BUSY during snapshot
         # upgrade while the busy handler is not consulted, dropping the write
-        # under contention (#1147). BEGIN IMMEDIATE (or a savepoint inside a
-        # caller-owned transaction) serializes the read/write pair.
+        # under contention (#1147). An owned BEGIN IMMEDIATE serializes the
+        # read/write pair; a savepoint inside a caller-owned deferred snapshot
+        # does not take the writer lock, so that snapshot stays caller-managed
+        # and can still raise SQLITE_BUSY_SNAPSHOT.
         with _write_locked_transaction(self.conn):
             existing_id = self._find_duplicate(content) if dedupe else None
             if existing_id:
