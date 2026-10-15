@@ -1093,6 +1093,8 @@ def _is_conversational_inquiry(text: str) -> bool:
     if "?" in t:
         return True
     lower = t.lower()
+    if re.search(r"\b(explain|what does|what is|meaning of)\b", lower):
+        return True
     inquiry_starters = (
         "what", "why", "how", "when", "where", "who", "which",
         "can you", "could you", "please", "explain", "tell me",
@@ -1129,8 +1131,7 @@ def _sanitize_hermes_machine_envelope(user_content: str) -> Optional[str]:
     if m:
         tail = text[m.end():].strip()
         if tail:
-            res = _sanitize_hermes_machine_envelope(tail)
-            return res if res is not None else tail
+            return _sanitize_hermes_machine_envelope(tail)
 
     # 1. Strippable envelope prefixes in mixed turns (cron preamble, cron reply, authentic system notes, MCP reload)
     changed = True
@@ -1187,7 +1188,7 @@ def _sanitize_hermes_machine_envelope(user_content: str) -> Optional[str]:
         if "\n\n" in after_prefix:
             tail = after_prefix.split("\n\n", 1)[1].strip()
             if tail:
-                return _sanitize_hermes_machine_envelope(tail) or tail
+                return _sanitize_hermes_machine_envelope(tail)
         return None
 
     if re.match(r"^\[PRIOR\s+CONTEXT\b", text, re.IGNORECASE):
@@ -1206,7 +1207,7 @@ def _sanitize_hermes_machine_envelope(user_content: str) -> Optional[str]:
         if "\n\n" in text:
             tail = text.split("\n\n", 1)[1].strip()
             if tail:
-                return _sanitize_hermes_machine_envelope(tail) or tail
+                return _sanitize_hermes_machine_envelope(tail)
         return None
 
     if re.match(r"^\[Your\s+active\s+task\s+list\s+was\s+preserved\b", text, re.IGNORECASE):
@@ -1215,7 +1216,7 @@ def _sanitize_hermes_machine_envelope(user_content: str) -> Optional[str]:
         if "\n\n" in text:
             tail = text.split("\n\n", 1)[1].strip()
             if tail:
-                return _sanitize_hermes_machine_envelope(tail) or tail
+                return _sanitize_hermes_machine_envelope(tail)
         return None
 
     if re.match(r"^\[Planning\s+state\s+preserved\b", text, re.IGNORECASE):
@@ -1224,7 +1225,7 @@ def _sanitize_hermes_machine_envelope(user_content: str) -> Optional[str]:
         if "\n\n" in text:
             tail = text.split("\n\n", 1)[1].strip()
             if tail:
-                return _sanitize_hermes_machine_envelope(tail) or tail
+                return _sanitize_hermes_machine_envelope(tail)
         return None
 
     # 3. Async delegation notices
@@ -1239,7 +1240,7 @@ def _sanitize_hermes_machine_envelope(user_content: str) -> Optional[str]:
         if m_prose:
             tail = text[m_prose.end():].strip()
             if tail:
-                return _sanitize_hermes_machine_envelope(tail) or tail
+                return _sanitize_hermes_machine_envelope(tail)
             return None
         if "[System note:" in text:
             tail = "[System note:" + text.split("[System note:")[-1]
@@ -1260,14 +1261,14 @@ def _sanitize_hermes_machine_envelope(user_content: str) -> Optional[str]:
             if idx != -1:
                 tail = text[idx + 1:].strip()
                 if tail:
-                    return _sanitize_hermes_machine_envelope(tail) or tail
+                    return _sanitize_hermes_machine_envelope(tail)
             return None
         # Short mock/test notice, e.g. "[IMPORTANT: Background process job completed]\nPlease summarize..."
         if "]\n" in text:
             idx = text.find("]\n")
             tail = text[idx + 1:].strip()
             if tail:
-                return _sanitize_hermes_machine_envelope(tail) or tail
+                return _sanitize_hermes_machine_envelope(tail)
         if text.endswith("]"):
             if "?" in text:
                 return text

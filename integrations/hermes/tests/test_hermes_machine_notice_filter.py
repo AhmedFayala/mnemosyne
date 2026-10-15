@@ -369,3 +369,21 @@ def test_prior_context_repeated_handoff_keeps_human_prompt():
     text = (f"[PRIOR CONTEXT — earlier]\nsummary A\n{marker}\n"
             f"[PRIOR CONTEXT — earlier]\nsummary B\n{marker}\nsolve this for me please")
     assert _sanitize_hermes_machine_envelope(text) == "solve this for me please"
+
+
+def test_bracketed_human_question_about_notice_is_kept():
+    # ponytail: dplush r5 — notice-like bracketed question must keep the human input
+    text = "[IMPORTANT: Background process — what does that mean?]"
+    assert _sanitize_hermes_machine_envelope(text) == text
+
+
+def test_explanation_request_without_question_mark_is_kept():
+    # ponytail: dplush r5 — explicit explanation request without '?' is human input
+    text = "explain the background process notice you just got"
+    assert _sanitize_hermes_machine_envelope(text) == text
+
+
+def test_unmatched_recursive_fallback_drops_machine_content():
+    # ponytail: dplush r5 — a machine notice whose inner pass rejects must not leak raw
+    text = "[Your active task list was preserved across context compression]\n\n[IMPORTANT: Background process x completed]"
+    assert _sanitize_hermes_machine_envelope(text) in (None, "")
