@@ -1051,6 +1051,9 @@ def _sync_turn_assistant_limit() -> int:
         return 800
 
 
+# Interrupted-note boundary: the note bracket plus its "The interrupted request was:]" cut point
+_HERMES_INTERRUPTED_BOUNDARY = re.compile(r"^\[System\s+note:\s+(?:Your|The)\s+previous\s+turn\s+was\s+interrupted[^\]]*?The\s+interrupted\s+request\s+was:\]\s*", re.IGNORECASE)
+
 # Authentic Hermes machine notice and strippable prefix patterns
 _HERMES_AUTHENTIC_SYSTEM_NOTES: Tuple[re.Pattern, ...] = (
     re.compile(r"^\[System\s+note:\s+(?:Your|The)\s+previous\s+turn\s+was\s+interrupted[^\]]*\]\s*", re.IGNORECASE),
@@ -1121,9 +1124,10 @@ def _sanitize_hermes_machine_envelope(user_content: str) -> Optional[str]:
     if not text:
         return ""
 
-    # Check for interrupted prompt first (preserves trailing interrupted human request)
-    if re.match(r"^\[System\s+note:\s+(?:Your|The)\s+previous\s+turn\s+was\s+interrupted", text, re.IGNORECASE) and "The interrupted request was:" in text:
-        tail = text.split("The interrupted request was:", 1)[1].lstrip("]\n ").strip()
+    # Interrupted prompt: cut only at the note's own boundary, never inside later human text.
+    m = _HERMES_INTERRUPTED_BOUNDARY.match(text)
+    if m:
+        tail = text[m.end():].strip()
         if tail:
             res = _sanitize_hermes_machine_envelope(tail)
             return res if res is not None else tail

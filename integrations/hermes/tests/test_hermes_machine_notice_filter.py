@@ -355,3 +355,17 @@ def test_context_compaction_tail_keeps_human_prompt_exactly():
             "--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---\n"
             "solve this for me please")
     assert _sanitize_hermes_machine_envelope(text) == "solve this for me please"
+
+
+def test_interrupted_note_without_boundary_keeps_later_human_quote():
+    # ponytail: regression for dplush r4 — only the note's own boundary may cut the text
+    text = "[System note: Your previous turn was interrupted mid-run.]\n\nhuman says: The interrupted request was: X and more"
+    assert _sanitize_hermes_machine_envelope(text) == "human says: The interrupted request was: X and more"
+
+
+def test_prior_context_repeated_handoff_keeps_human_prompt():
+    # ponytail: regression for dplush r4 — exercises the repeated PRIOR CONTEXT branch
+    marker = "--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---"
+    text = (f"[PRIOR CONTEXT — earlier]\nsummary A\n{marker}\n"
+            f"[PRIOR CONTEXT — earlier]\nsummary B\n{marker}\nsolve this for me please")
+    assert _sanitize_hermes_machine_envelope(text) == "solve this for me please"
