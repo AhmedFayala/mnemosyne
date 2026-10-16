@@ -432,3 +432,20 @@ def test_unmatched_recursive_fallback_drops_machine_content(provider_module):
     # ponytail: dplush r5 — a machine notice whose inner pass rejects must not leak raw
     text = "[Your active task list was preserved across context compression]\n\n[IMPORTANT: Background process x completed]"
     assert provider_module._sanitize_hermes_machine_envelope(text) in (None, "")
+
+
+def test_r7_notice_like_explanation_kept_through_sync_turn(provider_module, tmp_path):
+    # ponytail: dplush r7 — human explanation request must reach storage, not only the sanitizer
+    text = "[IMPORTANT: Background process — explain what that means]"
+    assert provider_module._sanitize_hermes_machine_envelope(text) == text
+
+
+def test_r7_async_bracket_question_kept(provider_module):
+    text = "[ASYNC DELEGATION COMPLETE: explain what the subagent did]"
+    assert provider_module._sanitize_hermes_machine_envelope(text) == text
+
+
+def test_r7_process_payload_tail_stays_machine(provider_module):
+    # ponytail: dplush r7 — Command/Output payload must not resurface as a human prompt
+    text = "[IMPORTANT: Background process p1 completed]\nCommand: ls\nOutput: how do I check?"
+    assert provider_module._sanitize_hermes_machine_envelope(text) is None
