@@ -423,3 +423,47 @@ def test_gateway_restart_notice_with_inquiry_words_suppresses_storage():
         assert len(prov._beam.recall("gateway session", top_k=5)) == 0
         assert len(prov._beam.recall("restarted automatically", top_k=5)) == 0
         identity_mock.assert_not_called()
+
+
+def test_task_list_notice_with_inquiry_item_suppresses_storage():
+    # ponytail: dplush r10 — public Hermes TodoStore task list containing inquiry words
+    # must not revive into storage, and must suppress paired assistant autosave and ledger capture
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "test.db"
+        prov = MnemosyneMemoryProvider()
+        prov._beam = BeamMemory(db_path=db_path)
+        prov._sync_roles = {"user", "assistant"}
+        identity_mock = MagicMock()
+        prov._capture_identity_signals = identity_mock
+        ledger = MagicMock()
+        prov._verbatim_ledger = ledger
+
+        raw = (
+            "[Your active task list was preserved across context compression]\n"
+            "- [ ] 1. Check the anonymous report (pending)"
+        )
+        prov.sync_turn(raw, "Checking report.")
+
+        assert len(prov._beam.recall("Check the anonymous report", top_k=5)) == 0
+        assert len(prov._beam.recall("Checking report", top_k=5)) == 0
+        identity_mock.assert_not_called()
+        ledger.capture.assert_not_called()
+
+
+def test_r7_notice_like_explanation_persists_through_sync_turn_storage(tmp_path):
+    # ponytail: dplush r10 / coderabbit — human explanation request survives real sync_turn SQLite path
+    db_path = tmp_path / "test.db"
+    prov = MnemosyneMemoryProvider()
+    prov._beam = BeamMemory(db_path=db_path)
+    prov._sync_roles = {"user", "assistant"}
+    identity_mock = MagicMock()
+    prov._capture_identity_signals = identity_mock
+
+    text = "[IMPORTANT: Background process — explain what that means]"
+    prov.sync_turn(text, "It is an execution status notification.")
+
+    results = prov._beam.recall("explain what that means", top_k=5)
+    assert len(results) > 0
+    assert text in results[0]["content"]
+    assert "[USER]" in results[0]["content"]
+    identity_mock.assert_called_once_with(text)
