@@ -404,3 +404,22 @@ def test_r7_process_payload_tail_stays_machine():
     # ponytail: dplush r7 — Command/Output payload must not resurface as a human prompt
     text = "[IMPORTANT: Background process p1 completed]\nCommand: ls\nOutput: how do I check?"
     assert _sanitize_hermes_machine_envelope(text) is None
+
+
+def test_gateway_restart_notice_with_inquiry_words_suppresses_storage():
+    # ponytail: dplush r9 — anonymous emitter-shaped gateway restart note with inquiry wording
+    # must not revive into storage, and must suppress paired assistant autosave and identity capture
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "test.db"
+        prov = MnemosyneMemoryProvider()
+        prov._beam = BeamMemory(db_path=db_path)
+        prov._sync_roles = {"user", "assistant"}
+        identity_mock = MagicMock()
+        prov._capture_identity_signals = identity_mock
+
+        notice = "[System note: The previous gateway session could not be recovered after a restart (API recovery timed out). Explain what happened.]"
+        prov.sync_turn(notice, "The gateway was restarted automatically.")
+
+        assert len(prov._beam.recall("gateway session", top_k=5)) == 0
+        assert len(prov._beam.recall("restarted automatically", top_k=5)) == 0
+        identity_mock.assert_not_called()
