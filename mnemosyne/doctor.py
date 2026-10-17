@@ -1601,8 +1601,12 @@ def _degradation_notes(payload: dict[str, Any]) -> list[str]:
 
 
 def _fsync_directory(directory: Path) -> None:
-    """Durably sync a completed output replacement's parent directory."""
+    """Sync a replacement's parent directory where directory handles are supported."""
 
+    # Windows' os.open uses the CRT, which cannot open directories. Staged
+    # files are still flushed/fsynced; directory durability is not provided.
+    if os.name == "nt":
+        return
     descriptor = os.open(directory, os.O_RDONLY)
     try:
         os.fsync(descriptor)
