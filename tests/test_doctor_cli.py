@@ -143,6 +143,9 @@ def test_doctor_run_cli_windows_directory_sync_capability(tmp_path, monkeypatch,
             assert target.read_bytes() == originals[index]
         else:
             assert not target.exists()
+    if mode.endswith("-stdout"):
+        assert FIXTURE_SECRET not in captured.out
+        assert FIXTURE_ORDINARY_MEMORY not in captured.out
     if mode == "json-stdout":
         assert json.loads(captured.out)["execution"]["read_only"] is True
     elif mode == "markdown-stdout":
