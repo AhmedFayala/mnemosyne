@@ -490,7 +490,7 @@ def _sanitize_hermes_machine_envelope_core(user_content: str) -> Optional[str]:
     # 2. Context compaction & summary handoffs
     if re.match(r"^\[CONTEXT\s+COMPACTION\b", text, re.IGNORECASE):
         # A genuine user question inquiring about context compaction
-        if "?" in text and "\n" not in text and "Earlier turns were compacted" not in text:
+        if "?" in text and "Earlier turns were compacted" not in text:
             return text
         for end_marker in (
             "--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---",
@@ -512,7 +512,7 @@ def _sanitize_hermes_machine_envelope_core(user_content: str) -> Optional[str]:
         return None
 
     if re.match(r"^\[PRIOR\s+CONTEXT\b", text, re.IGNORECASE):
-        if "?" in text and "\n" not in text and "for reference only; not a new message" not in text:
+        if "?" in text and "for reference only; not a new message" not in text:
             return text
         for end_marker in (
             "--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---",
@@ -531,7 +531,7 @@ def _sanitize_hermes_machine_envelope_core(user_content: str) -> Optional[str]:
         return None
 
     if re.match(r"^\[Your\s+active\s+task\s+list\s+was\s+preserved\b", text, re.IGNORECASE):
-        if "?" in text and "\n" not in text and "across context compression" not in text:
+        if "?" in text and "across context compression" not in text:
             return text
         if "\n\n" in text:
             tail = text.split("\n\n", 1)[1].strip()
@@ -540,7 +540,7 @@ def _sanitize_hermes_machine_envelope_core(user_content: str) -> Optional[str]:
         return None
 
     if re.match(r"^\[Planning\s+state\s+preserved\b", text, re.IGNORECASE):
-        if "?" in text and "\n" not in text:
+        if "?" in text:
             return text
         if "\n\n" in text:
             tail = text.split("\n\n", 1)[1].strip()
@@ -608,16 +608,17 @@ _HERMES_PAYLOAD_MARKERS = ("Output:", "Matched output:", "Command:", "--- RESULT
 
 
 def _is_human_inquiry_envelope(text: str) -> bool:
-    m = re.match(r"^\[([^\]]*)\][ \t]*(.*)$", text, re.DOTALL)
+    m = re.match(r"^\[([^\]]*)\]\s*(.*)$", text, re.DOTALL)
     if not m or any(p in text for p in _HERMES_PAYLOAD_MARKERS):
+        return False
+    # ponytail: task list snapshot items are machine output, not human inquiry
+    if re.match(r"^\s*-\s*\[[ xX]\]", m.group(2)):
         return False
     # ponytail: text inside a recognized authentic machine notice must never override rejection
     if any(pat.match(text) for pat in _HERMES_AUTHENTIC_MACHINE_PATTERNS):
         return False
-    header, rest = m.group(1), m.group(2)
-    return _is_conversational_inquiry(header) or (
-        bool(rest.strip()) and "\n" not in rest and _is_conversational_inquiry(rest.strip())
-    )
+    header, rest = m.group(1), m.group(2).strip()
+    return _is_conversational_inquiry(header) or (bool(rest) and _is_conversational_inquiry(rest))
 
 
 def _sanitize_hermes_machine_envelope(user_content: str) -> Optional[str]:

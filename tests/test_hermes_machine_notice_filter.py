@@ -512,3 +512,22 @@ def test_r7_notice_like_explanation_persists_through_sync_turn_storage(provider_
     assert text in results[0]["content"]
     assert "[USER]" in results[0]["content"]
     identity_mock.assert_called_once_with(text)
+
+
+def test_multiline_human_inquiry_with_notice_label_persists_storage(provider_module, tmp_path):
+    # ponytail: dplush r11 — multiline human inquiries with envelope label must persist USER and ASSISTANT
+    db_path = tmp_path / "test.db"
+    prov = _new_provider(provider_module)
+    prov._beam = BeamMemory(db_path=db_path)
+    prov._sync_roles = {"user", "assistant"}
+    identity_mock = MagicMock()
+    prov._capture_identity_signals = identity_mock
+
+    raw = "[PRIOR CONTEXT about my design]\nPlease explain the architecture."
+    prov.sync_turn(raw, "The architecture is modular.")
+
+    results = prov._beam.recall("explain the architecture", top_k=5)
+    assert len(results) > 0
+    assert "Please explain the architecture" in results[0]["content"]
+    assert "[USER]" in results[0]["content"]
+    identity_mock.assert_called_once_with(raw)
