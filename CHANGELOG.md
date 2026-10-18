@@ -9,6 +9,8 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 
 ### Fixed
 
+- Added privacy guidance for backup snapshots containing local memory data and `.gz.json` metadata that may disclose the absolute `source_db` path (#1196).
+
 - **`mnemosyne backup` and `mnemosyne restore` follow `MNEMOSYNE_BANK` (#1034).** Both commands read the default bank's database whatever `MNEMOSYNE_BANK` said, so `MNEMOSYNE_BANK=work mnemosyne backup` saved the default bank and `restore` overwrote it, and both reported success. They now resolve the bank at the CLI boundary, the way `store` and `recall` do, and pass its database to `create_backup` and `restore_backup`. A named bank that does not exist exits with code 2 before anything is written, including a missing data directory. `restore` into an existing bank whose database file is missing creates it. Without `MNEMOSYNE_BANK`, both commands behave as before.
 
 - **Doctor artifact output works on Windows (#1189).** Skip unsupported directory fsync on Windows while retaining staged-file flush/fsync, replacement and rollback. POSIX directory open/fsync errors still propagate; Windows directory durability is not provided.
