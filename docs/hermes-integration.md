@@ -399,8 +399,8 @@ if ($LASTEXITCODE -ne 0) {
 `--seed` supplies pip in the side venv. If `uv` is unavailable, stop and arrange
 it or another venv-creation method that explicitly uses `$HermesPython`, not an
 unrelated Python on `PATH`. After changing a wrapper, restart or refresh the
-actual local Hermes process. For this side-venv route, use `& $SideInstaller status`
-instead of `& $MnemosyneHermes status` in the verification below.
+actual local Hermes process. Use the side-venv installer status block in the
+verification below for this route.
 
 #### Enable and verify
 
@@ -412,12 +412,28 @@ hermes plugins enable hermes-mnemosyne --no-allow-tool-override
 hermes config set memory.provider mnemosyne
 ```
 
-Restart or start a new local Hermes session, then verify the installer and active
-provider in the same user/profile scope:
+Restart or start a new local Hermes session, then verify the active provider in
+the same user/profile scope (common to both installation routes):
+
+```powershell
+hermes memory status
+```
+
+Then run only the installer status block for the route you used, in the same
+PowerShell scope where its variable was initialized above.
+
+**Direct install into the Hermes environment (including the WinError 1314
+wrapper retry):** use `$MnemosyneHermes`, initialized beside `$HermesPython`:
 
 ```powershell
 & $MnemosyneHermes status
-hermes memory status
+```
+
+**Persistent side-venv wrapper:** use `$SideInstaller`, initialized inside
+`$SideVenv` alongside `$SidePython`, not the direct-install executable:
+
+```powershell
+& $SideInstaller status
 ```
 
 The current documented Hermes CLI contract does not provide a `hermes plugins
