@@ -223,3 +223,32 @@ def test_cli_unknown_bank_does_not_create_missing_data_root(tmp_path, command):
     assert not data_dir.exists()
     assert not (tmp_path / "backups").exists()
     assert source.read_bytes() == source_bytes
+
+
+def test_cli_staged_restore_failure_leaves_empty_bank_and_non_targets_unchanged(tmp_path):
+    data_dir = tmp_path / "data"
+    default_db = _make_store(data_dir / "mnemosyne.db", "default")
+    other_db = _make_store(data_dir / "banks" / "other" / "mnemosyne.db", "other")
+    work_dir = data_dir / "banks" / "work"
+    work_dir.mkdir(parents=True)
+    backup = _snapshot(tmp_path)
+    backup_path = Path(backup["backup_path"])
+    # Valid checksums reach SQL execution in the staged database, not merely
+    # the pre-staging checksum guard. Failure must not publish a target file.
+    bad_dump = gzip.decompress(backup_path.read_bytes()).replace(
+        b"CREATE TABLE marker", b"CREAT TABLE marker", 1
+    )
+    backup_path.write_bytes(gzip.compress(bad_dump))
+    metadata_path = Path(backup["metadata_path"])
+    metadata = json.loads(metadata_path.read_text())
+    metadata["backup_checksum"] = hashlib.sha256(backup_path.read_bytes()).hexdigest()[:16]
+    metadata["dump_checksum"] = hashlib.sha256(bad_dump).hexdigest()
+    metadata_path.write_text(json.dumps(metadata))
+    before = [path.read_bytes() for path in (default_db, other_db)]
+
+    result = _run_cli(["restore", str(backup_path)], tmp_path, data_dir, "work")
+
+    assert result.returncode == 1
+    assert "restore_failed" in result.stderr
+    assert list(work_dir.iterdir()) == []
+    assert [path.read_bytes() for path in (default_db, other_db)] == before

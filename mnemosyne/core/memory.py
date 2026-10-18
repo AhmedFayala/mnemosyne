@@ -617,7 +617,7 @@ class Mnemosyne:
             if durations:
                 metadata["_durations"] = durations
 
-        with _deferred_commits(self.conn):
+        with _deferred_commits(self.conn, immediate=True):
             memory_id = self.beam.remember(
                 _content, source=source,
                 importance=importance, metadata=metadata,
