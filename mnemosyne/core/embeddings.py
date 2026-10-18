@@ -553,17 +553,21 @@ def _cap_for_api(texts: List[str]) -> List[str]:
             text = text[:limit]
         if byte_limit > 0:
             original = text
-            # lone surrogates have no UTF-8 form: drop them rather than raise
+            # lone surrogates have no UTF-8 form: with the cap enabled they are
+            # dropped from every input, below the cap too, so the contract does
+            # not depend on whether the cut branch runs
             raw = text.encode("utf-8", "ignore")
+            text = raw.decode("utf-8")
             if len(raw) > byte_limit:
-                logger.warning(
-                    "embedding input truncated: %d -> %d bytes (model=%s, cap=MNEMOSYNE_EMBEDDING_MAX_BYTES)",
-                    len(raw),
-                    byte_limit,
-                    _DEFAULT_MODEL,
-                )
                 # a cut inside a multi-byte character drops that character, never emits half of it
                 text = raw[:byte_limit].decode("utf-8", "ignore")
+                logger.warning(
+                    "embedding input truncated: %d -> %d bytes (model=%s, cap=MNEMOSYNE_EMBEDDING_MAX_BYTES=%d)",
+                    len(raw),
+                    len(text.encode("utf-8")),
+                    _DEFAULT_MODEL,
+                    byte_limit,
+                )
                 if not text and original:
                     # Fail loud before any request: an input the cap would
                     # reduce to nothing would otherwise be sent as "".
