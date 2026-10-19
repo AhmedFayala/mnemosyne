@@ -1157,8 +1157,33 @@ def _normalize_backup_output_dir_arg(value: str, *, windows: bool | None = None)
     )
 
 
+def _resolve_recovery_bank_db_path(*, require_database: bool) -> Path | None:
+    """Return the database ``backup`` or ``restore`` uses for MNEMOSYNE_BANK.
+
+    The default bank returns None, so ``mnemosyne.dr.recovery`` keeps its own
+    default path. A named bank must already exist. It is looked up without
+    creating a bank directory, so a typo exits before anything is written.
+    ``backup`` also needs the bank's database file; ``restore`` writes that
+    file, so an existing bank whose database is missing is a valid target.
+    """
+    bank = _resolve_bank_name()
+    if bank == "default":
+        return None
+    from mnemosyne.core.banks import bank_exists_read_only, get_bank_db_path_read_only
+
+    data_dir = Path(DATA_DIR)
+    try:
+        if require_database:
+            return get_bank_db_path_read_only(bank, data_dir=data_dir)
+        if not bank_exists_read_only(bank, data_dir=data_dir):
+            raise ValueError(f"Bank '{bank}' does not exist")
+    except (ValueError, FileNotFoundError) as error:
+        _fail(str(error))
+    return data_dir / "banks" / bank / "mnemosyne.db"
+
+
 def cmd_backup(args):
-    """Create a compressed backup of the database."""
+    """Create a compressed backup of the database MNEMOSYNE_BANK selects."""
     from mnemosyne.dr.recovery import create_backup
     try:
         output_dir = Path(_normalize_backup_output_dir_arg(args[0])) if args else None
@@ -1166,8 +1191,9 @@ def cmd_backup(args):
         # Rejected at the CLI boundary before the backend runs: keep the
         # caller-visible message (arg-validation contract, exit 2).
         _fail(str(e))
+    db_path = _resolve_recovery_bank_db_path(require_database=True)
     try:
-        result = create_backup(backup_dir=output_dir)
+        result = create_backup(db_path=db_path, backup_dir=output_dir)
         print(f"Backup created: {result['backup_path']}")
         print(f"  Original size: {result['original_size']:,} bytes")
         print(f"  Backup size:   {result['backup_size']:,} bytes")
@@ -1177,12 +1203,13 @@ def cmd_backup(args):
 
 
 def cmd_restore(args):
-    """Restore database from a backup file."""
+    """Restore the database MNEMOSYNE_BANK selects from a backup file."""
     if not args:
         _usage("Usage: mnemosyne restore <backup_file.db.gz>")
     from mnemosyne.dr.recovery import restore_backup
+    db_path = _resolve_recovery_bank_db_path(require_database=False)
     try:
-        result = restore_backup(Path(args[0]))
+        result = restore_backup(Path(args[0]), db_path)
         status = "valid" if result["integrity_check"] else "corrupt"
         if not result["integrity_check"]:
             _fail("restore_failed", exit_code=1)
@@ -2022,8 +2049,8 @@ def run_cli():
         print("  reindex [--db PATH|--bank NAME] [--model NAME] [--batch-size N] [--dry-run] [--yes] [--no-backup]")
         print("                                      Rebuild vector indexes with the active model")
         print("                                      --batch-size: positive inputs per request (default 64)")
-        print("  backup [output_dir]                    Create database backup")
-        print("  restore <backup.db.gz>                 Restore from backup")
+        print("  backup [output_dir]                    Back up the bank selected by MNEMOSYNE_BANK")
+        print("  restore <backup.db.gz>                 Restore the bank selected by MNEMOSYNE_BANK")
         print("  verify [db_path] [--quick]             Verify database integrity")
         print("  backups [backup_dir]                   List available backups")
         print("  mcp [--transport stdio|sse|streamable-http|http] [--port 8080] [--path /mcp] [--json-response]")
@@ -2051,7 +2078,7 @@ def run_cli():
         # machine-readable code, never a traceback (which leaks absolute
         # paths and library internals into logs).
         try:
-            if command not in {"doctor", "repair", "reindex"}:
+            if command not in {"doctor", "repair", "reindex", "backup", "restore"}:
                 os.makedirs(DATA_DIR, exist_ok=True)
             handler(sys.argv[2:])
         except SystemExit:
