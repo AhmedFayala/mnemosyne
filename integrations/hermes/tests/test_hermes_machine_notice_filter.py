@@ -485,4 +485,8 @@ def test_multiline_human_inquiry_with_notice_label_persists_storage(tmp_path):
     assert len(results) > 0
     assert "Please explain the architecture" in results[0]["content"]
     assert "[USER]" in results[0]["content"]
+    assistant_rows = prov._beam.recall("The architecture is modular", top_k=5)
+    assert any(
+        "[ASSISTANT] The architecture is modular." in r["content"] for r in assistant_rows
+    )
     identity_mock.assert_called_once_with(raw)
