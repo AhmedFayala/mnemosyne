@@ -8,6 +8,7 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 ## [Unreleased]
 
 ### Fixed
+- Filter Hermes machine-generated notice envelopes from conversation sync (#1102)
 
 - Added privacy guidance for backup snapshots containing local memory data and `.gz.json` metadata that may disclose the absolute `source_db` path (#1196).
 
