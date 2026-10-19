@@ -240,3 +240,35 @@ def test_byte_cap_four_byte_chars_exact_boundary(monkeypatch):
     assert embeddings._cap_for_api(["\U00020000" * 3]) == ["\U00020000" * 2]
     monkeypatch.setenv("MNEMOSYNE_EMBEDDING_MAX_BYTES", "9")
     assert embeddings._cap_for_api(["\U00020000" * 3]) == ["\U00020000" * 2]
+
+
+def test_byte_cap_drops_lone_surrogates_below_cap(monkeypatch):
+    monkeypatch.setenv("MNEMOSYNE_EMBEDDING_MAX_BYTES", "10")
+    assert embeddings._cap_for_api(["a\udcffb"]) == ["ab"]
+
+
+@pytest.mark.parametrize("cap", ["10", "1"])
+def test_byte_cap_surrogate_only_raises_before_transport(monkeypatch, cap):
+    monkeypatch.setenv("MNEMOSYNE_EMBEDDING_MAX_BYTES", cap)
+    monkeypatch.setenv("MNEMOSYNE_EMBEDDING_API_URL", "http://127.0.0.1:11435/v1")
+
+    def fail_if_called(*_args, **_kwargs):
+        pytest.fail("embedding transport was called for surrogate-only input")
+
+    monkeypatch.setattr(embeddings.urllib.request, "urlopen", fail_if_called)
+
+    with pytest.raises(
+        embeddings.EmbeddingPolicyError, match="only lone surrogates"
+    ):
+        embeddings._embed_api(["\udcff"])
+
+
+def test_byte_cap_originally_empty_input_remains_empty(monkeypatch):
+    monkeypatch.setenv("MNEMOSYNE_EMBEDDING_MAX_BYTES", "10")
+    monkeypatch.setenv("MNEMOSYNE_EMBEDDING_API_URL", "http://127.0.0.1:11435/v1")
+    payloads = _capture_payload(monkeypatch)
+
+    assert embeddings._cap_for_api([""]) == [""]
+    embeddings._embed_api([""])
+    assert [p["input"] for p in payloads] == [[""]]
+
