@@ -145,6 +145,11 @@ def _hygiene_delete_cascade(
         ).fetchone()
         if gists_table is not None:
             cursor.execute("DELETE FROM gists WHERE memory_id = ?", (memory_id,))
+        from mnemosyne.core.beam import BeamMemory
+
+        if not BeamMemory._memory_has_surviving_parent(cursor, memory_id):
+            BeamMemory._delete_derived_memory_rows(cursor, memory_id)
+            BeamMemory._delete_orphaned_legacy_mirror(cursor, memory_id)
     except Exception:
         cursor.execute("ROLLBACK TO SAVEPOINT hygiene_delete")
         cursor.execute("RELEASE hygiene_delete")
