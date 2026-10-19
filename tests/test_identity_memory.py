@@ -138,6 +138,8 @@ _BOUNDARY_CASES = [
     pytest.param("Please summarize this synthetic storage example.", False, id="neutral"),
     pytest.param("I'M PROUD of this synthetic example.", True, id="lowercase-preserved"),
     pytest.param("Synthetic filler. " * 30 + "I'm proud", True, id="trigger-after-400"),
+    pytest.param("Synthetic example: 中imposter.", False, id="cjk-prefix-full-signal"),
+    pytest.param("Synthetic example: imposterя.", False, id="cyrillic-suffix-full-signal"),
 ]
 for _signal in _LITERAL_SIGNALS:
     for _prefix, _suffix, _label in (
@@ -171,7 +173,15 @@ def test_public_identity_word_boundaries(
     monkeypatch.syspath_prepend(str(root / "integrations" / "hermes" / "src"))
     monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("MNEMOSYNE_SELF_ECHO_ENABLED", "1")
-    provider = importlib.import_module(package).MnemosyneMemoryProvider()
+    module = importlib.import_module(package)
+    expected_source = (
+        root / "integrations" / "hermes" / "src" / "mnemosyne_hermes" / "__init__.py"
+        if package == "mnemosyne_hermes"
+        else root / "hermes_memory_provider" / "__init__.py"
+    )
+    assert module.__file__ is not None
+    assert Path(module.__file__).resolve() == expected_source.resolve()
+    provider = module.MnemosyneMemoryProvider()
     session = "synthetic-identity-boundary"
     provider.initialize(
         session, hermes_home=str(tmp_path / "hermes"), agent_context="primary",
