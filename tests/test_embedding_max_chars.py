@@ -236,5 +236,7 @@ def test_byte_cap_drops_lone_surrogates(monkeypatch):
 
 
 def test_byte_cap_four_byte_chars_exact_boundary(monkeypatch):
+    monkeypatch.setenv("MNEMOSYNE_EMBEDDING_MAX_BYTES", "8")
+    assert embeddings._cap_for_api(["\U00020000" * 3]) == ["\U00020000" * 2]
     monkeypatch.setenv("MNEMOSYNE_EMBEDDING_MAX_BYTES", "9")
     assert embeddings._cap_for_api(["\U00020000" * 3]) == ["\U00020000" * 2]
