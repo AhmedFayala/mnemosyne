@@ -558,6 +558,12 @@ def _cap_for_api(texts: List[str]) -> List[str]:
             # not depend on whether the cut branch runs
             raw = text.encode("utf-8", "ignore")
             text = raw.decode("utf-8")
+            if not raw and original:
+                # nothing but lone surrogates: fail loud instead of sending ""
+                raise _EmbeddingPolicyError(
+                    "an embedding input has no UTF-8-encodable character "
+                    "(only lone surrogates) after MNEMOSYNE_EMBEDDING_MAX_BYTES normalization"
+                )
             if len(raw) > byte_limit:
                 # a cut inside a multi-byte character drops that character, never emits half of it
                 text = raw[:byte_limit].decode("utf-8", "ignore")
