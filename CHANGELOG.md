@@ -8,6 +8,8 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 ## [Unreleased]
 
 ### Fixed
+- Match existing Hermes identity signal phrases only at Unicode word boundaries, preventing partial-word captures such as "I feel like as …" while preserving complete-phrase matches (PR #1202; partial fix for #1200).
+
 - Filter Hermes machine-generated notice envelopes from conversation sync (#1102)
 
 - Added privacy guidance for backup snapshots containing local memory data and `.gz.json` metadata that may disclose the absolute `source_db` path (#1196).
