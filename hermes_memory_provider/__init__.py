@@ -2777,7 +2777,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
     def _capture_identity_signals(self, user_content: str) -> None:
         content_lower = user_content.lower()
         for signal in self._IDENTITY_SIGNALS:
-            if signal in content_lower:
+            if re.search(r'\b' + re.escape(signal) + r'\b', content_lower):
                 # Save identity memory with high importance for durable recall
                 from mnemosyne.core.filters import _SYSTEM_DERIVED_WRITE_CAPABILITY
 
