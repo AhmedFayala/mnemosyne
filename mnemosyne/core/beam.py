@@ -5095,9 +5095,12 @@ _KO_JOSA = (
 )
 
 
+_HANGUL_SYLLABLE_RE = re.compile("[\uac00-\ud7a3]")
+
+
 def _has_hangul(text: str) -> bool:
     """True if text contains at least one precomposed Hangul syllable."""
-    return any("가" <= ch <= "힣" for ch in text)
+    return _HANGUL_SYLLABLE_RE.search(text) is not None
 
 
 _KO_JOSA_LONGEST_FIRST = tuple(sorted(_KO_JOSA, key=len, reverse=True))
