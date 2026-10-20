@@ -45,7 +45,7 @@ def test_adopt_pm_console_plan_does_not_import_product_modules(tmp_path):
     source = tmp_path / "source"
     shutil.copytree(Path(__file__).resolve().parents[1], source,
                     ignore=shutil.ignore_patterns("build", "*.egg-info", "__pycache__"))
-    built = subprocess.run([sys.executable, "-m", "build", "--wheel", "--no-isolation",
+    built = subprocess.run([sys.executable, "-m", "build", "--wheel",
         str(source), "--outdir", str(tmp_path / "dist")], capture_output=True, text=True)
     assert built.returncode == 0, built.stdout + built.stderr
     wheel = next((tmp_path / "dist").glob("*.whl"))

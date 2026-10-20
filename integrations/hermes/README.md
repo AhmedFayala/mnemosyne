@@ -221,6 +221,15 @@ checkout or a future SDK release containing `--adopt-pm`. Published
 `mnemosyne-hermes` **0.7.6 does not contain this option**. This is not a replacement
 for normal installation or Docker/persistent side-venv wrapper setup.
 
+The public PM integration was verified against Hermes revision
+`f4ac0bea1ea50bba62886fb0b7e308e4edee8fd3`: it exposes
+`pm.plugin_inputs.Candidates` and callable `pm.sync_venv`, accepts explicit plugin
+candidates, and consumes their `python_dependencies`. The verified legacy pair
+was core 3.15.1/provider 0.5.0, including real resolver-conflict and repair checks
+with resource-monitoring warnings. This is a tested reference, not an invented
+released-version floor or an all-version/all-platform guarantee. A metadata-only
+dry-run does not import PM or certify these apply-time prerequisites.
+
 Use the supporting installer's standalone tool environment for the command below;
 it is distinct from the **prior virtual environment** passed to `--python`.
 Do not upgrade the prior environment to obtain the installer. Here
@@ -255,6 +264,14 @@ extras; it does not select latest, bootstrap a beta, or upgrade to Core 4. Plan
 any version upgrade separately and explicitly. Unknown or modified legacy targets
 are refused. Externally owned persistent side-venv/directory wrappers remain
 untouched, even with `--force`; this flow does not convert them.
+
+Adoption also refuses legacy child-profile links that point directly at the prior
+package, including opted-in profiles; it will not leave those OLD bindings behind.
+Before retrying, inspect each affected link and its ownership. Deliberately
+re-point an appropriate owned profile link to the root
+`<hermes-home>/plugins/mnemosyne` binding, or explicitly remove only that owned
+profile link if that is your intended configuration. No profile-link removal is
+automatic, and `--force` does not bypass this refusal.
 
 A genuine resolver conflict **before PM selection commit** leaves config, facts,
 the selected application generation and plugin/profile bindings unchanged. PM

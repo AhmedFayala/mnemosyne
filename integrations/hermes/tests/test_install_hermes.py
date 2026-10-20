@@ -25,6 +25,7 @@ def _source() -> Path:
 
 def _adoption_fixture(tmp_path):
     """Synthetic installed artifacts; PM is faked ONLY in unit tests."""
+    _skip_on_windows()
     import base64
     import csv
     import hashlib
@@ -101,6 +102,35 @@ def test_adopt_pm_conflict_unit_preserves_config_and_binding(tmp_path, monkeypat
     assert (home / "config.yaml").read_bytes() == config
 
 
+@pytest.mark.parametrize("aliased_home", [False, True])
+def test_adopt_pm_home_alias_rerun_and_plan_preserve_binding(tmp_path, monkeypatch, aliased_home):
+    """Real filesystem/idempotence unit control; the PM callback is not native evidence."""
+    home, python, site, target = _adoption_fixture(tmp_path)
+    selected_home = home
+    if aliased_home:
+        selected_home = tmp_path / "home-alias"
+        selected_home.symlink_to(home, target_is_directory=True)
+    calls = []
+    monkeypatch.setattr(install_mod, "_sync_adoption_pm", lambda base, candidate: calls.append(candidate))
+    args = ["--hermes-home", str(selected_home), "install", "--adopt-pm",
+            "--python", str(python), "--core-extras", "embeddings", "--provider-extras", "none"]
+    config = (home / "config.yaml").read_bytes()
+    assert install_mod.main(args) == 0
+    candidate = selected_home / ".mnemosyne-pm/mnemosyne"
+    assert target.resolve() == candidate.resolve()
+    original_stat = target.lstat()
+    original_binding = (original_stat.st_dev, original_stat.st_ino, target.readlink())
+    payload = {p.name: p.read_bytes() for p in candidate.iterdir()}
+    assert install_mod.main(args + ["--dry-run"]) == 0
+    assert len(calls) == 1  # A plan never calls PM.
+    assert install_mod.main(args) == 0
+    assert calls == [candidate, candidate]
+    current_stat = target.lstat()
+    assert (current_stat.st_dev, current_stat.st_ino, target.readlink()) == original_binding
+    assert {p.name: p.read_bytes() for p in candidate.iterdir()} == payload
+    assert (home / "config.yaml").read_bytes() == config
+
+
 def test_adopt_pm_ambiguous_failure_retains_candidate_and_committed_facts(tmp_path, monkeypatch, capsys):
     home, python, site, target = _adoption_fixture(tmp_path)
     facts = home / "new-facts.json"
@@ -144,10 +174,12 @@ def test_adopt_pm_plan_does_not_execute_python_site_or_touch_files(tmp_path, mon
         raise AssertionError("read-only adoption cannot execute a subprocess")
     monkeypatch.setattr(install_mod.subprocess, "run", forbidden)
     original = target.lstat()
+    original_binding = (original.st_dev, original.st_ino, target.readlink())
     before = (home / "config.yaml").read_bytes()
     assert install_mod.main(["--hermes-home", str(home), "install", "--adopt-pm", "--dry-run",
         "--python", str(python), "--core-extras", "none", "--provider-extras", "none"]) == 0
-    assert target.lstat() == original
+    current = target.lstat()
+    assert (current.st_dev, current.st_ino, target.readlink()) == original_binding
     assert (home / "config.yaml").read_bytes() == before
     assert not (home / ".mnemosyne-pm").exists()
     assert not trap.exists()

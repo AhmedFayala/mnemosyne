@@ -8,7 +8,7 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 ## [Unreleased]
 
 ### Fixed
-- **Explicit legacy Hermes PM adoption (#1169).** An opt-in installer path preserves the verified installed core/provider pair and operator-selected extras through Hermes PM admission, refuses external wrappers, and provides a core-free read-only console plan without changing normal installation defaults.
+- **Partial legacy Hermes PM adoption work (#1169 remains open).** An opt-in installer path preserves the verified installed core/provider pair and operator-selected extras through Hermes PM admission, refuses external wrappers, and provides a core-free read-only console plan without changing normal installation defaults; this does not close the broader issue.
 
 - Match existing Hermes identity signal phrases only at Unicode word boundaries, preventing partial-word captures such as "I feel like as …" while preserving complete-phrase matches (PR #1202; partial fix for #1200).
 

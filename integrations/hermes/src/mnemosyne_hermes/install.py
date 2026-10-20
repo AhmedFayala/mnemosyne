@@ -2427,7 +2427,7 @@ def _adoption_target_snapshot(target: Path, prior: Path, candidate: Path, payloa
         raise ValueError("Only a RECORD-verified legacy package symlink may be adopted; external/unknown wrappers stay untouched")
     destination = target.resolve()
     if destination != prior.resolve() and not (
-        destination == candidate and _adoption_candidate_matches(candidate, payload)
+        destination == candidate.resolve() and _adoption_candidate_matches(candidate, payload)
     ):
         raise ValueError("Plugin binding is not the verified prior installed artifact")
     st = target.lstat()
@@ -2507,7 +2507,7 @@ def _run_adopt_pm(args) -> int:
     try:
         if not _adoption_candidate_matches(candidate, payload) or _adoption_payload(python, args.core_extras, args.provider_extras)[1] != identity or _adoption_target_snapshot(target, prior, candidate, payload) != snapshot:
             raise RuntimeError("Prior artifact or plugin binding changed after PM commit")
-        if target.resolve() != candidate:
+        if target.resolve() != candidate.resolve():
             with tempfile.TemporaryDirectory(prefix=".mnemosyne-adopt-", dir=target.parent) as temporary:
                 staged = Path(temporary) / PLUGIN_NAME
                 staged.symlink_to(candidate, target_is_directory=True)
