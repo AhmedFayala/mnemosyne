@@ -233,13 +233,14 @@ def _resolve_bank(arguments: Dict[str, Any]) -> str:
 def _resolve_default_scope() -> str:
     """Resolve default scope for remember() calls.
     
-    Precedence: MNEMOSYNE_DEFAULT_SCOPE env var, falling back to 'session'.
+    Precedence: MNEMOSYNE_DEFAULT_SCOPE env var, falling back to 'global'.
     Only 'session' and 'global' are accepted; unrecognized values fall through
     to the hardcoded default."""
     raw = os.environ.get("MNEMOSYNE_DEFAULT_SCOPE", "").strip().lower()
     if raw in ("session", "global"):
         return raw
-    return "session"
+    # ponytail: default to 'global' so MCP writes are visible to CLI/Hermes/SDK readers (#653)
+    return "global"
 
 
 def _serialize(obj):

@@ -8,6 +8,8 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 ## [Unreleased]
 
 ### Fixed
+- **MCP `mnemosyne_remember` and batch operations default omitted `scope` to `global` (#653).** Memories written via the MCP server previously defaulted to `scope='session'` under the fixed `session_id=mcp_{bank}`, making them invisible to CLI, Hermes, and SDK readers whose sessions differ. Defaulting omitted scope to `global` restores cross-session visibility while preserving explicit `scope='session'` isolation and explicit `MNEMOSYNE_DEFAULT_SCOPE` configuration.
+
 - Match existing Hermes identity signal phrases only at Unicode word boundaries, preventing partial-word captures such as "I feel like as …" while preserving complete-phrase matches (PR #1202; partial fix for #1200).
 
 - Filter Hermes machine-generated notice envelopes from conversation sync (#1102)
