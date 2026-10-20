@@ -520,7 +520,7 @@ class TestToolHandlers:
             "SELECT scope FROM working_memory WHERE id = ?",
             (ids[3],),
         ).fetchone()
-        assert extract_scope[0] == "session"
+        assert extract_scope[0] == "global"
 
 
     def test_handle_batch_failure_rolls_back(self, tmp_path, monkeypatch):
