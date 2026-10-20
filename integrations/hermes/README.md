@@ -212,6 +212,60 @@ mnemosyne-hermes install --dry-run          # shows which interpreter would be u
 symlink install, and selects the site-packages a `--mode wrapper` install imports
 from.
 
+#### Explicit legacy PM adoption (development, not yet released)
+
+This opt-in flow is for a verified existing legacy package-symlink installation
+whose exact core/provider pair should become owned by Hermes' package manager
+(PM). It requires a supporting Hermes PM installation and an installer from this
+checkout or a future SDK release containing `--adopt-pm`. Published
+`mnemosyne-hermes` **0.7.6 does not contain this option**. This is not a replacement
+for normal installation or Docker/persistent side-venv wrapper setup.
+
+Use the supporting installer's standalone tool environment for the command below;
+it is distinct from the **prior virtual environment** passed to `--python`.
+Do not upgrade the prior environment to obtain the installer. Here
+`/path/to/installer-venv/bin/mnemosyne-hermes` means the console command installed
+from this checkout or that future release, not the old provider's command.
+
+First inspect the read-only plan, using the selected Hermes home's global argument
+before `install` and the explicit prior VENV's Python:
+
+```bash
+/path/to/installer-venv/bin/mnemosyne-hermes --hermes-home /path/to/hermes-home install --adopt-pm --python /path/to/prior-venv/bin/python --core-extras embeddings --provider-extras none --dry-run
+```
+
+The extras above are **operator-chosen examples**, not autodetection: both
+`--core-extras` and `--provider-extras` require an explicit choice when the prior
+selection cannot be established. Confirm your actual selections first; use `none`
+for no extras or comma-separated names for selected extras. Merely installed
+libraries or advertised available extras do not establish what was selected.
+The plan reads installed metadata without importing the prior provider/core or
+activating its environment, and does not change data, models, config or bindings.
+It is not a guarantee that dependency resolution or apply will succeed.
+
+Only after reviewing the plan, consent to PM ownership with the same command
+without `--dry-run`:
+
+```bash
+/path/to/installer-venv/bin/mnemosyne-hermes --hermes-home /path/to/hermes-home install --adopt-pm --python /path/to/prior-venv/bin/python --core-extras embeddings --provider-extras none
+```
+
+Adoption preserves the verified exact installed core/provider versions and chosen
+extras; it does not select latest, bootstrap a beta, or upgrade to Core 4. Plan
+any version upgrade separately and explicitly. Unknown or modified legacy targets
+are refused. Externally owned persistent side-venv/directory wrappers remain
+untouched, even with `--force`; this flow does not convert them.
+
+A genuine resolver conflict **before PM selection commit** leaves config, facts,
+the selected application generation and plugin/profile bindings unchanged. PM
+commit and the later local binding swap are **not one crash-atomic transaction**.
+An ambiguous admission error may occur after commit: selection may have changed,
+the candidate declaration is retained, and owned legacy bindings remain unchanged
+on that admission-error path. Inspect the reported PM state before taking another
+action; do not infer a global rollback. A subsequent local binding failure is
+reported as partial state, not success. Owned candidate/cache files can persist
+even after a resolver conflict. Restart Hermes after successful adoption.
+
 #### Wrapper validation timeout
 
 For a wrapper install, `--import-timeout SECONDS` sets the timeout for both
