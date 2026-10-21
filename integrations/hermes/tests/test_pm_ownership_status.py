@@ -408,3 +408,125 @@ def test_real_content_change_between_reads_still_refused(recorded, monkeypatch):
     assert changed
     assert result["ownership"] == "unknown", result
     assert "metadata changed" in result["reason"]
+
+
+@requires_tomllib
+@pytest.mark.parametrize("alias_kind", ["home", "ancestor"])
+def test_selected_home_alias_preserves_canonical_pm_key(recorded, alias_kind):
+    home, facts, *_ = recorded
+    before = snapshot(home)
+    alias = home.parent / "selected-alias"
+    alias.symlink_to(home if alias_kind == "home" else home.parent)
+    selected = alias if alias_kind == "home" else alias / home.name
+    result = module()._metadata_status(selected)
+    assert result["ownership"] == "pm_managed", result
+    assert result["path"] == str(home / "plugins/mnemosyne")
+    assert facts.parent.name == hashlib.sha256(str(home / "hermes-agent").encode()).hexdigest()[:16]
+    assert snapshot(home) == before
+
+
+@pytest.mark.parametrize("component", ["directory", "file"])
+def test_internal_metadata_links_still_refused(recorded, component):
+    home, facts, *_ = recorded
+    if component == "file":
+        saved = home / "saved-facts.json"
+        facts.rename(saved); facts.symlink_to(saved)
+    else:
+        installs = home / "installs"
+        saved = home / "saved-installs"
+        installs.rename(saved); installs.symlink_to(saved)
+    result = module()._metadata_status(home)
+    assert result["ownership"] == "unknown", result
+    assert "symlink" in result["reason"]
+
+
+@pytest.mark.parametrize("dangling", [False, True])
+def test_outside_binding_present_without_destination_inspection(tmp_path, monkeypatch, capsys, dangling):
+    home = tmp_path / "home"
+    target = home / "plugins/mnemosyne"
+    target.parent.mkdir(parents=True)
+    foreign = tmp_path / "foreign"
+    if not dangling:
+        foreign.mkdir()
+        (foreign / "__init__.py").write_text("raise AssertionError('must not import')")
+    target.symlink_to(foreign)
+    mod = module()
+    def forbidden(*args, **kwargs):
+        raise AssertionError("status probe forbidden")
+    for name in ("_find_hermes_python", "check_mnemosyne_core", "_check_wrapper_import", "_sync_adoption_pm"):
+        monkeypatch.setattr(mod, name, forbidden)
+    monkeypatch.setattr(subprocess, "run", forbidden)
+    monkeypatch.setattr(subprocess, "Popen", forbidden)
+    for name in ("exists", "stat", "lstat", "open", "read_bytes", "is_symlink", "resolve"):
+        original = getattr(Path, name)
+        def guarded(path, *args, _original=original, **kwargs):
+            assert not path.is_relative_to(foreign), "foreign destination inspected"
+            return _original(path, *args, **kwargs)
+        monkeypatch.setattr(Path, name, guarded)
+    capsys.readouterr()
+    assert cli.main(["--hermes-home", str(home), "status"]) == 0
+    out = capsys.readouterr()
+    assert not out.err
+    assert "binding present (destination not inspected)" in out.out
+    assert "Ownership: unknown" in out.out
+    assert "NOT CHECKED" in out.out
+    assert "Ownership: legacy" not in out.out and "pm_managed" not in out.out
+
+
+@pytest.mark.parametrize("broken", [False, True])
+def test_missing_and_in_home_broken_binding_are_distinct(tmp_path, broken):
+    home = tmp_path / "home"
+    target = home / "plugins/mnemosyne"
+    target.parent.mkdir(parents=True)
+    if broken:
+        target.symlink_to(home / "missing-package")
+    assert module()._metadata_status(home)["plugin"] == ("broken_symlink" if broken else "missing")
+
+
+@requires_tomllib
+@pytest.mark.parametrize("fault", ["unreadable", "oversize", "directory", "file_link", "parent_link", "recheck_failure"])
+def test_skill_fault_is_independent_of_verified_plugin(recorded, monkeypatch, capsys, fault):
+    home, *_ = recorded
+    mod = module()
+    skill = mod.skill_target_file(home)
+    skill.parent.mkdir(parents=True)
+    if fault == "directory":
+        skill.mkdir()
+    elif fault == "file_link":
+        skill.symlink_to(home / "absent-skill")
+    elif fault == "parent_link":
+        skill.parent.rmdir()
+        skill.parent.symlink_to(home / "absent-skills")
+    else:
+        skill.write_text("x" * (1024 * 1024 + 1) if fault == "oversize" else "synthetic skill")
+    if fault in {"unreadable", "recheck_failure"}:
+        original = Path.open
+        calls = 0
+        def failing(path, mode="r", *args, **kwargs):
+            nonlocal calls
+            if path == skill:
+                calls += 1
+                if fault == "unreadable" or calls > 1:
+                    raise PermissionError("synthetic skill denial\x1b[2J")
+            return original(path, mode, *args, **kwargs)
+        monkeypatch.setattr(Path, "open", failing)
+    result = mod._metadata_status(home)
+    assert result["ownership"] == "pm_managed", result
+    assert result["plugin"] == "present (metadata only)"
+    assert result["skill"] == "unknown"
+    assert result["skill_reason"]
+    capsys.readouterr()
+    assert cli.main(["--hermes-home", str(home), "status"]) == 0
+    output = capsys.readouterr().out
+    assert "Skill reason:" in output
+    assert "\x1b" not in output
+
+
+def test_selected_home_resolve_failure_is_unknown(tmp_path, monkeypatch):
+    mod = module()
+    def failed(*args, **kwargs):
+        raise OSError("synthetic selected-home resolve failure")
+    monkeypatch.setattr(Path, "resolve", failed)
+    result = mod._metadata_status(tmp_path)
+    assert result["ownership"] == "unknown"
+    assert "resolve failure" in result["reason"]

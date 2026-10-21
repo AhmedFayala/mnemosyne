@@ -77,6 +77,15 @@ claim. `external` is a legitimate explicit wrapper binding, not an instruction t
 adopt it. `incomplete` and `unknown` explain absent/conflicting/unsupported data;
 a candidate directory alone is not PM evidence. Missing plugins remain distinct.
 
+The explicitly selected home is canonicalized once: home/ancestor aliases are
+allowed, but metadata symlink components inside that canonical home are refused.
+An outside-home plugin symlink is reported as a present binding only, with unknown
+ownership: its destination is not inspected, even to distinguish missing from
+existing packages. This is not proof of an installed or working runtime. Skill
+metadata errors (including unsafe paths or later read failures) are reported
+separately and do not erase verified plugin/PM facts. Plugin/PM metadata drift
+still prevents a complete ownership verdict.
+
 The supported reference is Hermes `f4ac0bea1ea50bba62886fb0b7e308e4edee8fd3`:
 facts schema 1, selected per-install generation, manifest-only `plugin-deps`
 workspace members and exact Core/provider requirements. The selected `uv.lock`

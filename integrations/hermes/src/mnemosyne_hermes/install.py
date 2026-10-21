@@ -2318,20 +2318,23 @@ def _metadata_status(base: Path) -> dict:
     workspace members. Unsupported layouts fail closed. Reads are bounded and
     checked again, not an atomic filesystem snapshot or a security sandbox.
     """
-    base = Path(os.path.abspath(base.expanduser()))
+    base = Path(base)
     result = {"ownership": "unknown", "plugin": "unknown", "requirements": "unknown",
               "selected": "unknown", "consistency": "unknown", "reason": "",
               "path": str(base / "plugins" / PLUGIN_NAME), "mode": "unknown",
-              "skill_path": str(skill_target_file(base)), "skill": "unknown",
+              "skill_path": str(skill_target_file(base)), "skill": "unknown", "skill_reason": "",
               "stamp": "recorded only; not recomputed or validated"}
     observed = {}
+    skill_observed = {}
 
     def safe(path):
         path = Path(os.path.abspath(path))
         if not path.is_relative_to(base):
             raise ValueError("metadata path outside selected home (not followed)")
-        for parent in [*reversed(path.parents), path]:
-            if parent.is_symlink():
+        current = base
+        for part in path.relative_to(base).parts:
+            current = current / part
+            if current.is_symlink():
                 raise ValueError("unsafe metadata symlink (not followed)")
         return path
 
@@ -2341,7 +2344,7 @@ def _metadata_status(base: Path) -> dict:
                 st.st_mtime_ns if st.st_mtime_ns is not None else st.st_mtime,
                 st.st_ctime_ns if st.st_ctime_ns is not None else st.st_ctime)
 
-    def read(path):
+    def read(path, observations=observed):
         path = safe(path)
         st = path.stat()
         if not stat.S_ISREG(st.st_mode) or st.st_size > 1024 * 1024:
@@ -2350,9 +2353,9 @@ def _metadata_status(base: Path) -> dict:
             data = stream.read(1024 * 1024 + 1)
         if len(data) > 1024 * 1024:
             raise ValueError("metadata size changed")
-        if path in observed and observed[path] != (signature(st), data):
+        if path in observations and observations[path] != (signature(st), data):
             raise ValueError("metadata changed during read")
-        observed[path] = (signature(st), data)
+        observations[path] = (signature(st), data)
         return data.decode("utf-8-sig")
 
     def entries(path):
@@ -2362,6 +2365,18 @@ def _metadata_status(base: Path) -> dict:
             raise ValueError("metadata directory too large")
         observed[path] = (signature(path.stat()), names)
         return names
+
+    def recheck(observations):
+        for path, (before, data) in observations.items():
+            safe(path)
+            after = path.stat()
+            if isinstance(data, list):
+                current = sorted(p.name for p in path.iterdir())
+            else:
+                with path.open("rb") as stream:
+                    current = stream.read(1024 * 1024 + 1)
+            if before != signature(after) or current != data:
+                raise ValueError("metadata changed during read; retry status later")
 
     def pair(site):
         names = entries(site)
@@ -2409,21 +2424,32 @@ def _metadata_status(base: Path) -> dict:
         return safe(sites[0])
 
     try:
-        safe(base)
+        # The selected home is the trust root; aliases at/above it are legitimate.
+        base = base.expanduser().resolve()
+        result.update(path=str(base / "plugins" / PLUGIN_NAME), skill_path=str(skill_target_file(base)))
         if not base.exists():
             result.update(plugin="missing", reason="selected home does not exist; nothing created")
             return result
-        skill = safe(skill_target_file(base))
-        if skill.exists():
-            read(skill)
-            result["skill"] = "installed (metadata only)"
-        else:
-            result["skill"] = "missing"
+        try:
+            skill = safe(skill_target_file(base))
+            if skill.exists():
+                read(skill, skill_observed)
+                result["skill"] = "installed (metadata only)"
+            else:
+                result["skill"] = "missing"
+        except (OSError, ValueError, RuntimeError) as exc:
+            result.update(skill="unknown", skill_reason=str(exc))
         target = base / "plugins" / PLUGIN_NAME
         safe(target.parent)
         binding = os.readlink(target) if target.is_symlink() else None
         result["mode"] = "symlink" if binding else "directory"
         destination = Path(os.path.abspath(target.parent / binding)) if binding else target
+        if binding and not destination.is_relative_to(base):
+            result.update(plugin="binding present (destination not inspected)",
+                          reason="outside-home plugin binding only; destination existence/package/runtime not checked")
+            if os.readlink(target) != binding:
+                raise ValueError("plugin binding changed during read")
+            return result
         safe(destination)
         if not destination.exists():
             result.update(plugin="broken_symlink" if binding else "missing", reason="plugin binding missing")
@@ -2530,20 +2556,17 @@ def _metadata_status(base: Path) -> dict:
                     result.update(ownership="incomplete", consistency="selected package metadata mismatch", reason="selected versions/extras differ from recorded requirements")
                 else:
                     result.update(ownership="pm_managed", consistency="adoption complete (METADATA ONLY)", reason="recorded inputs, binding and selected package metadata agree")
-        for path, (before, data) in observed.items():
-            safe(path)
-            after = path.stat()
-            if isinstance(data, list):
-                current = sorted(p.name for p in path.iterdir())
-            else:
-                with path.open("rb") as stream:
-                    current = stream.read(1024 * 1024 + 1)
-            if before != signature(after) or current != data:
-                raise ValueError("metadata changed during read; retry status later")
+        recheck(observed)
         if (os.readlink(target) if target.is_symlink() else None) != binding:
             raise ValueError("plugin binding changed during read")
-    except (OSError, ValueError, TypeError, KeyError, AttributeError, ImportError) as exc:
+    except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError, ImportError) as exc:
         result.update(ownership="unknown", consistency="unknown", reason=str(exc))
+    finally:
+        # Skill health is independent, including drift after a successful read.
+        try:
+            recheck(skill_observed)
+        except (OSError, ValueError, RuntimeError) as exc:
+            result.update(skill="unknown", skill_reason=str(exc))
     return result
 
 
@@ -2551,8 +2574,8 @@ def _print_metadata_status(base: Path) -> int:
     result = _metadata_status(base)
     print("Status for mnemosyne-hermes plugin (installation metadata only)")
     print("  Selected Hermes home: " + ascii(str(base))[1:-1])
-    for key, label in (("path", "Plugin path"), ("plugin", "State"), ("mode", "Mode"), ("skill_path", "Skill path"), ("skill", "Skill"), ("ownership", "Ownership"), ("requirements", "Recorded requirements"), ("selected", "Selected environment"), ("consistency", "Package metadata consistency"), ("stamp", "PM stamp"), ("reason", "Reason"), ("warning", "Warning")):
-        if key == "warning" and not result.get(key):
+    for key, label in (("path", "Plugin path"), ("plugin", "State"), ("mode", "Mode"), ("skill_path", "Skill path"), ("skill", "Skill"), ("skill_reason", "Skill reason"), ("ownership", "Ownership"), ("requirements", "Recorded requirements"), ("selected", "Selected environment"), ("consistency", "Package metadata consistency"), ("stamp", "PM stamp"), ("reason", "Reason"), ("warning", "Warning")):
+        if key in {"warning", "skill_reason"} and not result.get(key):
             continue
         # Metadata is untrusted; never print terminal control sequences.
         value = str(result[key])
