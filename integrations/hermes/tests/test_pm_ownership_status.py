@@ -1,5 +1,6 @@
 """Owned synthetic metadata only; layout from pinned Hermes PM workspace/facts writers."""
 import base64
+from contextlib import contextmanager
 import csv
 import hashlib
 import importlib.util
@@ -317,44 +318,66 @@ def test_atime_only_mock_keeps_actual_status_complete(recorded, monkeypatch, cap
     mod = module()
     assert mod._metadata_status(home)["ownership"] == "pm_managed"
     original = Path.stat
-    calls = 0
+    original_open = Path.open
+    sampled = False
+    changed_after_read = False
     def atime_only(path, *args, **kwargs):
-        nonlocal calls
+        nonlocal changed_after_read
         value = original(path, *args, **kwargs)
         if path == facts:
-            calls += 1
             row = list(value)
-            row[7] += calls
+            if sampled:
+                row[7] += 1
+                changed_after_read = True
             return os.stat_result(row)
         return value
+    @contextmanager
+    def opened(path, mode="r", *args, **kwargs):
+        nonlocal sampled
+        with original_open(path, mode, *args, **kwargs) as stream:
+            yield stream
+        if path == facts and mode == "rb":
+            sampled = True
     monkeypatch.setattr(Path, "stat", atime_only)
+    monkeypatch.setattr(Path, "open", opened)
     capsys.readouterr()
     assert cli.main(["--hermes-home", str(home), "status"]) == 0
     assert "adoption complete (METADATA ONLY)" in capsys.readouterr().out
-    assert calls >= 2
+    assert sampled and changed_after_read
 
 
 @requires_tomllib
 @pytest.mark.parametrize("field", [0, 1, 2, 4, 5, 6, 8, 9])
 def test_substantive_stat_change_mock_still_refused(recorded, monkeypatch, field):
-    """Controlled mode/inode/dev/uid/gid/size/mtime/ctime change on second stat."""
+    """Controlled stat change AFTER the first facts read, not incidental stat calls."""
     home, facts, *_ = recorded
     mod = module()
     assert mod._metadata_status(home)["ownership"] == "pm_managed"
     original = Path.stat
-    calls = 0
+    original_open = Path.open
+    sampled = False
+    changed_after_read = False
     def changed(path, *args, **kwargs):
-        nonlocal calls
+        nonlocal changed_after_read
         value = original(path, *args, **kwargs)
         if path == facts:
-            calls += 1
             row = list(value)
-            if calls > 1:
+            if sampled:
                 row[field] += 1
+                changed_after_read = True
             return os.stat_result(row)
         return value
+    @contextmanager
+    def opened(path, mode="r", *args, **kwargs):
+        nonlocal sampled
+        with original_open(path, mode, *args, **kwargs) as stream:
+            yield stream
+        if path == facts and mode == "rb":
+            sampled = True
     monkeypatch.setattr(Path, "stat", changed)
+    monkeypatch.setattr(Path, "open", opened)
     result = mod._metadata_status(home)
+    assert sampled and changed_after_read
     assert result["ownership"] == "unknown", result
     assert "metadata changed" in result["reason"]
 

@@ -2440,6 +2440,7 @@ def _metadata_status(base: Path) -> dict:
             if data.get("schema_version") != 1 or data.get("package") != "mnemosyne_hermes" or not all(isinstance(data.get(k), str) and Path(data[k]).is_absolute() for k in ("python", "site_packages")):
                 raise ValueError("unsupported wrapper metadata")
             result.update(ownership="external", mode="wrapper", selected=data["site_packages"],
+                          warning=_pm_wrapper_warning(data["python"], base) or "",
                           reason="explicit external wrapper binding; external package/runtime not checked; Hermes PM record is not active for this binding")
         elif not facts_path.exists():
             if binding and destination != candidate and destination.name == "mnemosyne_hermes":
@@ -2550,7 +2551,9 @@ def _print_metadata_status(base: Path) -> int:
     result = _metadata_status(base)
     print("Status for mnemosyne-hermes plugin (installation metadata only)")
     print("  Selected Hermes home: " + ascii(str(base))[1:-1])
-    for key, label in (("path", "Plugin path"), ("plugin", "State"), ("mode", "Mode"), ("skill_path", "Skill path"), ("skill", "Skill"), ("ownership", "Ownership"), ("requirements", "Recorded requirements"), ("selected", "Selected environment"), ("consistency", "Package metadata consistency"), ("stamp", "PM stamp"), ("reason", "Reason")):
+    for key, label in (("path", "Plugin path"), ("plugin", "State"), ("mode", "Mode"), ("skill_path", "Skill path"), ("skill", "Skill"), ("ownership", "Ownership"), ("requirements", "Recorded requirements"), ("selected", "Selected environment"), ("consistency", "Package metadata consistency"), ("stamp", "PM stamp"), ("reason", "Reason"), ("warning", "Warning")):
+        if key == "warning" and not result.get(key):
+            continue
         # Metadata is untrusted; never print terminal control sequences.
         value = str(result[key])
         print(f"  {label}: " + "".join(c if c.isprintable() else "?" for c in value))
