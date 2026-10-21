@@ -18,6 +18,16 @@ def _hash_text(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+def test_adopt_pm_dry_run_and_extras_require_explicit_choice(tmp_path, monkeypatch, capsys):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("ordinary install/preflight must not run")
+    monkeypatch.setattr(install, "run_install", forbidden)
+    assert install.main(["install", "--core-extras", "none"]) == 1
+    assert "--adopt-pm" in capsys.readouterr().err
+    assert install.main(["install", "--adopt-pm", "--dry-run"]) == 1
+    assert "--python" in capsys.readouterr().err
+
+
 def test_bundled_memory_override_skill_resource_is_discoverable():
     text = install.bundled_skill_text()
 

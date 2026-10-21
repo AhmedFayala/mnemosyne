@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import csv
+from email.parser import Parser
 import importlib.metadata
 import hashlib
 import importlib
@@ -2308,6 +2311,217 @@ def _runtime_python_json(
 
 
 
+def _adoption_distribution(site: Path, name: str, package: str) -> tuple[str, set[str], str]:
+    """Read and verify an index-installed artifact without executing its code."""
+    infos = list(site.glob(name.replace("-", "_") + "-*.dist-info"))
+    if len(infos) != 1:
+        raise ValueError(f"Ambiguous or missing installed artifact: {name}")
+    info = infos[0]
+    if info.is_symlink() or (info / "direct_url.json").exists():
+        raise ValueError(f"Editable/direct-URL artifacts cannot be adopted: {name}")
+    meta = Parser().parsestr((info / "METADATA").read_text(encoding="utf-8"))
+    version = meta.get("Version", "")
+    if meta.get("Name", "").lower().replace("_", "-") != name or not re.fullmatch(
+        r"\d+(?:\.\d+)*(?:(?:a|b|rc)\d+)?(?:\.post\d+)?(?:\.dev\d+)?", version
+    ):
+        raise ValueError(f"Unsupported installed metadata: {name}")
+    if not (info / "WHEEL").is_file():
+        raise ValueError(f"Not a wheel-installed artifact: {name}")
+    root = site / package
+    if root.is_symlink() or not (root / "__init__.py").is_file():
+        raise ValueError(f"Invalid installed package origin: {name}")
+    verified = set()
+    digest = hashlib.sha256()
+    with (info / "RECORD").open(encoding="utf-8", newline="") as stream:
+        for relative, recorded_hash, size in csv.reader(stream):
+            parts = PurePosixPath(relative).parts
+            if not parts or parts[0] not in {package, info.name}:
+                continue
+            path = site / relative
+            if path == info / "RECORD":
+                continue
+            if path.suffix == ".pyc" and not recorded_hash:
+                continue
+            if path.is_symlink() or not path.resolve().is_relative_to(site.resolve()):
+                raise ValueError(f"Artifact path escapes prior environment: {relative}")
+            data = path.read_bytes()
+            actual = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).decode().rstrip("=")
+            if recorded_hash != "sha256=" + actual or size != str(len(data)):
+                raise ValueError(f"Modified/unverified installed artifact: {relative}")
+            verified.add(path)
+            digest.update(relative.encode() + b"\0" + data)
+    required = {info / "METADATA", info / "WHEEL", root / "__init__.py"}
+    required.update(p for p in root.rglob("*") if p.is_file() and "__pycache__" not in p.parts)
+    if not required.issubset(verified):
+        raise ValueError(f"Incomplete installed RECORD: {name}")
+    return version, set(meta.get_all("Provides-Extra", [])), digest.hexdigest()
+
+
+def _adoption_extras(value: str | None, available: set[str], flag: str) -> list[str]:
+    if value is None:
+        raise ValueError(f"{flag} requires explicit prior selection (comma-separated names or none)")
+    if value == "none":
+        return []
+    extras = value.split(",")
+    if not extras or any(not re.fullmatch(r"[a-z0-9]+(?:[-_][a-z0-9]+)*", e) for e in extras):
+        raise ValueError(f"Invalid {flag}; use comma-separated names or none")
+    if not set(extras).issubset(available):
+        raise ValueError(f"Unknown {flag}: {sorted(set(extras) - available)}")
+    return sorted(set(extras))
+
+
+def _adoption_payload(python: Path, core_extras: str | None, provider_extras: str | None):
+    """Statically capture only the two prior distributions, never activate site/.pth."""
+    root = python.parent.parent
+    if not (root / "pyvenv.cfg").is_file() or not python.is_file():
+        raise ValueError("--python must name the prior virtualenv interpreter (not its resolved base)")
+    sites = [p for p in [root / "Lib" / "site-packages", *root.glob("lib/python*/site-packages")]
+             if p.is_dir()]
+    if len(sites) != 1 or sites[0].is_symlink() or not sites[0].resolve().is_relative_to(root.resolve()):
+        raise ValueError("Ambiguous or missing prior site-packages")
+    site = sites[0]
+    core, core_available, core_digest = _adoption_distribution(site, "mnemosyne-memory", "mnemosyne")
+    provider, provider_available, provider_digest = _adoption_distribution(site, "mnemosyne-hermes", "mnemosyne_hermes")
+    requirements = []
+    for name, version, extras in [
+        ("mnemosyne-memory", core, _adoption_extras(core_extras, core_available, "--core-extras")),
+        ("mnemosyne-hermes", provider, _adoption_extras(provider_extras, provider_available, "--provider-extras")),
+    ]:
+        requirements.append(name + ("[" + ",".join(extras) + "]" if extras else "") + "==" + version)
+    # Preserve verified declarative identity/capabilities without importing YAML
+    # or executing the prior provider during a read-only plan. PM parses YAML.
+    source_manifest = (site / "mnemosyne_hermes" / "plugin.yaml").read_text(encoding="utf-8-sig")
+    fields = {}
+    for block in re.split(r"(?m)(?=^[A-Za-z_][A-Za-z0-9_-]*:)", source_manifest):
+        key = block.split(":", 1)[0]
+        if key in {"name", "description", "author", "provides_tools", "provides_hooks"}:
+            if key in fields:
+                raise ValueError("Ambiguous prior provider manifest field: " + key)
+            fields[key] = block.rstrip() + "\n"
+    if "name" not in fields:
+        raise ValueError("Prior provider manifest has no declarative identity")
+    if re.search(r"(?mi)^python_runtime:\s*['\"]?external", source_manifest):
+        raise ValueError("Externally owned provider runtime cannot be adopted")
+    manifest = ("".join(fields.values()) + "version: " + provider + "\npython_dependencies: "
+                + json.dumps(requirements) + "\n")
+    payload = {
+        "plugin.yaml": manifest,
+        "__init__.py": '# PM-owned Mnemosyne registration: register_memory_provider\nfrom mnemosyne_hermes import *  # noqa: F401,F403\n',
+        "cli.py": 'from mnemosyne_hermes.cli import *  # noqa: F401,F403\n',
+    }
+    return site / "mnemosyne_hermes", (core_digest, provider_digest), payload
+
+
+def _adoption_candidate_matches(candidate: Path, payload: dict[str, str]) -> bool:
+    if candidate.is_symlink() or not candidate.is_dir():
+        return False
+    names = {p.name for p in candidate.iterdir() if p.name != "__pycache__"}
+    return names == set(payload) and all(
+        not (candidate / name).is_symlink() and (candidate / name).read_text(encoding="utf-8") == text
+        for name, text in payload.items()
+    )
+
+
+def _adoption_target_snapshot(target: Path, prior: Path, candidate: Path, payload):
+    if not target.is_symlink():
+        raise ValueError("Only a RECORD-verified legacy package symlink may be adopted; external/unknown wrappers stay untouched")
+    destination = target.resolve()
+    if destination != prior.resolve() and not (
+        destination == candidate.resolve() and _adoption_candidate_matches(candidate, payload)
+    ):
+        raise ValueError("Plugin binding is not the verified prior installed artifact")
+    st = target.lstat()
+    return st.st_dev, st.st_ino, os.readlink(target)
+
+
+def _sync_adoption_pm(base: Path, candidate: Path) -> None:
+    """Use the existing Hermes public PM in its own checkout/runtime, never pip."""
+    root = base / "hermes-agent"
+    if not (root / "pm" / "__init__.py").is_file():
+        raise RuntimeError("PM adoption requires the existing Hermes checkout at <hermes-home>/hermes-agent")
+    python = _find_hermes_python(hermes_home_path=base)
+    if python is None:
+        raise RuntimeError("Could not identify Hermes PM runtime; no bootstrap attempted")
+    code = (
+        "import sys; sys.path.insert(0, sys.argv[1]); "
+        "from pathlib import Path; import pm; from pm.plugin_inputs import Candidates; "
+        "pm.sync_venv(explicit=True, plugins=Candidates([Path(sys.argv[2])]))"
+    )
+    environment = {k: v for k, v in os.environ.items()
+                   if k not in {"PYTHONPATH", "PYTHONHOME", "HERMES_INSTALL_ROOT"}}
+    environment["HERMES_HOME"] = str(base)
+    result = subprocess.run([str(python), "-I", "-B", "-c", code, str(root), str(candidate)],
+                            cwd=root, env=environment, check=False)
+    if result.returncode:
+        raise RuntimeError(f"Hermes PM admission failed (exit {result.returncode}); legacy binding was not changed")
+
+
+def _run_adopt_pm(args) -> int:
+    if not args.python:
+        raise ValueError("--adopt-pm requires --python naming the PRIOR pair environment")
+    if args.mode is not None or args.migrate_wrapper_to_symlink or args.no_bootstrap or not args.link_profiles:
+        raise ValueError("--adopt-pm cannot combine with mode/bootstrap/profile-link/migration options")
+    base = Path(args.hermes_home).expanduser().absolute() if args.hermes_home else hermes_home().absolute()
+    python = Path(args.python).expanduser().absolute()  # Preserve the venv's lexical interpreter.
+    prior, identity, payload = _adoption_payload(python, args.core_extras, args.provider_extras)
+    target = plugin_target_dir(base)
+    candidate_parent = base / ".mnemosyne-pm"
+    candidate = candidate_parent / PLUGIN_NAME
+    if candidate_parent.is_symlink() or target.parent.is_symlink():
+        raise ValueError("Refusing aliased adoption/plugin directory")
+    profiles = base / "profiles"
+    if profiles.is_dir():
+        for profile in profiles.iterdir():
+            link = profile / "plugins" / PLUGIN_NAME
+            if not profile.is_symlink() and link.is_symlink() and link.resolve() == prior.resolve():
+                raw = Path(os.readlink(link))
+                binding = raw if raw.is_absolute() else link.parent / raw
+                if binding.absolute() != target:
+                    raise ValueError("A profile binds directly to the prior package; refusing to leave an OLD binding behind")
+    snapshot = _adoption_target_snapshot(target, prior, candidate, payload)
+    if (candidate.exists() or candidate.is_symlink()) and not _adoption_candidate_matches(candidate, payload):
+        raise ValueError("Existing PM candidate is unknown or modified; refusing overwrite")
+    if not os.access(target.parent, os.W_OK) or (candidate_parent.exists() and not os.access(candidate_parent, os.W_OK)):
+        raise PermissionError("Plugin/candidate parent is not writable")
+    print("PM adoption requirements: " + payload["plugin.yaml"].split("python_dependencies: ")[1].strip())
+    if args.dry_run:
+        print("Read-only plan; no PM, pip, product imports, skills or profile changes.")
+        return 0
+    created = not candidate.exists()
+    if created:
+        candidate_parent.mkdir(exist_ok=True)
+        candidate.mkdir()
+        for name, text in payload.items():
+            (candidate / name).write_text(text, encoding="utf-8")
+    try:
+        if not _adoption_candidate_matches(candidate, payload) or _adoption_payload(python, args.core_extras, args.provider_extras)[1] != identity or _adoption_target_snapshot(target, prior, candidate, payload) != snapshot:
+            raise RuntimeError("Prior artifact or plugin binding changed before admission")
+        _sync_adoption_pm(base, candidate)
+    except Exception as exc:
+        # A failed transport/worker can have committed before reporting failure.
+        # Keep the complete source even for conflicts; never edit PM facts here.
+        raise RuntimeError(
+            "PM admission did not report success; legacy binding unchanged, selection may have changed; "
+            f"candidate retained at {candidate}. Inspect PM state before retrying: {exc}"
+        ) from exc
+    try:
+        if not _adoption_candidate_matches(candidate, payload) or _adoption_payload(python, args.core_extras, args.provider_extras)[1] != identity or _adoption_target_snapshot(target, prior, candidate, payload) != snapshot:
+            raise RuntimeError("Prior artifact or plugin binding changed after PM commit")
+        if target.resolve() != candidate.resolve():
+            with tempfile.TemporaryDirectory(prefix=".mnemosyne-adopt-", dir=target.parent) as temporary:
+                staged = Path(temporary) / PLUGIN_NAME
+                staged.symlink_to(candidate, target_is_directory=True)
+                _replace_plugin_target_with_staged(target, staged)
+    except Exception as exc:
+        raise RuntimeError(
+            "PARTIAL: PM selection committed; local plugin binding was not adopted. "
+            "New PM facts retained (no global rollback). Inspect the legacy binding and "
+            "retry the same --adopt-pm command after correcting the binding error: " + str(exc)
+        ) from exc
+    print("PM adoption complete; exact prior pair/extras retained. Restart Hermes to use its selected generation.")
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="mnemosyne-hermes",
@@ -2325,6 +2539,9 @@ def _parser() -> argparse.ArgumentParser:
         "install",
         help="Install Mnemosyne into Hermes' memory provider plugin directory.",
     )
+    install.add_argument("--adopt-pm", action="store_true", help="Explicitly admit a verified legacy pair to Hermes PM; --python names its PRIOR environment.")
+    install.add_argument("--core-extras", help="With --adopt-pm, explicitly preserve chosen core extras, comma-separated or none.")
+    install.add_argument("--provider-extras", help="With --adopt-pm, explicitly preserve chosen provider extras, comma-separated or none; installed metadata cannot infer selection.")
     install.add_argument(
         "--force",
         action="store_true",
@@ -2599,6 +2816,10 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if command == "install":
+            if getattr(args, "adopt_pm", False):
+                return _run_adopt_pm(args)
+            if getattr(args, "core_extras", None) is not None or getattr(args, "provider_extras", None) is not None:
+                raise ValueError("Extras selection requires explicit --adopt-pm consent")
             # argparse leaves --mode as None when the user did not choose one, so
             # resolve it here, before anything reads it. Every downstream path
             # (dry-run reporting included) then sees a concrete mode.

@@ -226,6 +226,7 @@ class TestMCPDefaultScope:
     def test_mcp_remember_omitted_scope_cross_session_visible(self, tmp_path, monkeypatch):
         """[#653] An MCP-authored memory with omitted scope is visible to CLI/SDK readers."""
         monkeypatch.delenv("MNEMOSYNE_DEFAULT_SCOPE", raising=False)
+        monkeypatch.setenv("MNEMOSYNE_CROSS_SESSION", "0")
         monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(tmp_path / "data"))
 
         from mnemosyne.core.memory import Mnemosyne
@@ -245,6 +246,7 @@ class TestMCPDefaultScope:
     def test_mcp_remember_explicit_session_scope_retains_isolation(self, tmp_path, monkeypatch):
         """[#653] An MCP-authored memory with explicit scope='session' retains session isolation."""
         monkeypatch.delenv("MNEMOSYNE_DEFAULT_SCOPE", raising=False)
+        monkeypatch.setenv("MNEMOSYNE_CROSS_SESSION", "0")
         monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(tmp_path / "data"))
 
         from mnemosyne.core.memory import Mnemosyne
