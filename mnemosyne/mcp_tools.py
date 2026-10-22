@@ -12,6 +12,7 @@ All imports are guarded — this module loads safely even if mcp is not installe
 """
 
 from typing import TYPE_CHECKING, Dict, Any, List, TypeAlias
+import copy
 import json
 import logging
 import math  # noqa: F401
@@ -77,7 +78,7 @@ def __getattr__(name: str) -> Any:
 
 TOOLS: List[Dict[str, Any]] = []
 for _s in ALL_TOOL_SCHEMAS:
-    _t = dict(_s)
+    _t = copy.deepcopy(_s)
     # ``mcp`` SDK 2.x renamed the wire field on ``Tool`` from the camelCase
     # ``inputSchema`` (1.x) to the snake_case ``input_schema``. The
     # canonical Python-side key matches the model field. Pydantic still
@@ -87,6 +88,17 @@ for _s in ALL_TOOL_SCHEMAS:
         _t["input_schema"] = _t.pop("inputSchema")
     elif "parameters" in _t:
         _t["input_schema"] = _t.pop("parameters")
+    if _t.get("name") == "mnemosyne_remember":
+        # Remove static scope default for the MCP surface so clients do not
+        # materialize 'session', allowing server-side _resolve_default_scope()
+        # to apply (#653).
+        _props = _t.get("input_schema", {}).get("properties", {})
+        if "scope" in _props:
+            _props["scope"].pop("default", None)
+            _props["scope"]["description"] = (
+                "'session' or 'global'. Default is resolved server-side from "
+                "MNEMOSYNE_DEFAULT_SCOPE, falling back to 'global'."
+            )
     TOOLS.append(_t)
 
 # ---------------------------------------------------------------------------
