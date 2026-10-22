@@ -8,6 +8,8 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 ## [Unreleased]
 
 ### Fixed
+- **MCP `mnemosyne_remember` and batch operations default omitted `scope` to `global` (#653).** Memories written via the MCP server previously defaulted to `scope='session'` under the fixed `session_id=mcp_{bank}`, making them invisible to CLI, Hermes, and SDK readers whose sessions differ. Defaulting omitted scope to `global` restores cross-session visibility while preserving explicit `scope='session'` isolation and explicit `MNEMOSYNE_DEFAULT_SCOPE` configuration.
+
 - **Partial legacy Hermes PM adoption work (#1169 remains open).** An opt-in installer path preserves the verified installed core/provider pair and operator-selected extras through Hermes PM admission, refuses external wrappers, and provides a core-free read-only console plan without changing normal installation defaults; this does not close the broader issue.
 
 - Match existing Hermes identity signal phrases only at Unicode word boundaries, preventing partial-word captures such as "I feel like as …" while preserving complete-phrase matches (PR #1202; partial fix for #1200).
@@ -48,7 +50,7 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 
 ### Added
 
-- **`MNEMOSYNE_EMBEDDING_MAX_BYTES` caps API embedding inputs by UTF-8 bytes (#1199).** A character cap (`MNEMOSYNE_EMBEDDING_MAX_CHARS`, #1052) does not bound tokens: against a llama.cpp endpoint with an 8192-token slot, 6000 characters of some scripts tokenized to 9–18k tokens and still overflowed. UTF-8 bytes bound tokens from above for byte-level BPE tokenizers, so a byte cap at or below the slot bounds the input text itself; leave headroom for tokens the endpoint adds (BOS/EOS, separators, an instruction prefix). The cap is off by default and applies only to the API embedding path. When set, lone surrogates are dropped from every input, the head of the text is kept on a whole-character boundary, every cut is logged with the actual result length, and an input with no UTF-8-encodable character left raises instead of sending an empty string.
+- **`MNEMOSYNE_EMBEDDING_MAX_BYTES` caps API embedding inputs by UTF-8 bytes (#1199).** A character cap (`MNEMOSYNE_EMBEDDING_MAX_CHARS`, #1052) does not bound tokens: against a llama.cpp endpoint with an 8192-token slot, 6000 characters of some scripts tokenized to 9–18k tokens and still overflowed. UTF-8 bytes bound tokens from above for byte-level BPE tokenizers, so a byte cap at or below the slot bounds the input text itself; leave headroom for tokens the endpoint adds (BOS/EOS, separators, an instruction prefix). The cap is off by default and applies only to the API embedding path. When set, lone surrogates are dropped from every input, the head of the text is kept on a whole-character boundary, every cut is logged with the actual result length, and a nonempty input with no UTF-8-encodable character left (emptied by normalization or caps) raises instead of sending an empty string (an originally empty input is preserved).
 
 - **`recall_with_evidence_pack()` adds opt-in supplemental recall evidence (#545).** The API preserves the normal primary ranking and returns a bounded, provenance-preserving `evidence_pack` from eligible additional sessions. Candidate retrieval is telemetry-neutral, honors recall visibility and temporal filters, excludes consolidated and synthetic rows, and never exposes the raw candidate pool.
 

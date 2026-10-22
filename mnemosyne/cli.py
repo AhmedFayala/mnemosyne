@@ -337,6 +337,19 @@ def cmd_stats(args):
 
 def cmd_sleep(args):
     """Run consolidation cycle."""
+    for arg in args:
+        if arg not in {"--force", "-f", "--all-sessions", "--dry-run", "--help", "-h"}:
+            _fail(f"Unknown sleep option: {arg}")
+    if "--help" in args or "-h" in args:
+        print("Usage: mnemosyne sleep [--force|-f] [--all-sessions] [--dry-run]")
+        print("Alias: consolidate")
+        print("  --force, -f     Force consolidation")
+        print("  --all-sessions  Consolidate across all sessions")
+        print("  --dry-run       Preview consolidation without applying it")
+        print("  --help, -h      Show this help")
+        return
+
+    os.makedirs(DATA_DIR, exist_ok=True)
     mem = _get_memory()
     force = "--force" in args or "-f" in args
     all_sessions = "--all-sessions" in args
@@ -2078,7 +2091,7 @@ def run_cli():
         # machine-readable code, never a traceback (which leaks absolute
         # paths and library internals into logs).
         try:
-            if command not in {"doctor", "repair", "reindex", "backup", "restore"}:
+            if command not in {"doctor", "repair", "reindex", "backup", "restore", "sleep", "consolidate"}:
                 os.makedirs(DATA_DIR, exist_ok=True)
             handler(sys.argv[2:])
         except SystemExit:

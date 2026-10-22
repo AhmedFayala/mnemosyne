@@ -54,6 +54,54 @@ user_profile_enabled: false
 
 Mnemosyne handles everything: capture, recall, consolidation, knowledge graph, multi-agent validation. The built-in MEMORY.md/USER.md system is redundant and just burns tokens. One provider. One memory layer.
 
+## Read-only installation ownership status
+
+`PYTHONDONTWRITEBYTECODE=1 mnemosyne-hermes --hermes-home /selected/home status`
+reads installation metadata in that explicit home, not the calling Python's
+runtime. It does not run Python/PM, import Core/provider code, activate `.pth`
+files, open stores, sync, repair, adopt, create directories, or contact a network.
+Interpreter startup is outside this command-logic guarantee; use a trusted
+interpreter and disable bytecode as above.
+
+Illustrative output (not a current installation measurement):
+
+    Ownership: pm_managed
+    Package metadata consistency: adoption complete (METADATA ONLY)
+    Runtime/provider function/hooks/autosave: NOT CHECKED
+
+`pm_managed` requires recorded PM inputs, candidate requirements, plugin binding,
+and selected Core/provider package metadata to agree. Chosen extras come from
+recorded requirements, never inferred from installed libraries. `legacy` means a
+package symlink with verified critical RECORD metadata, not a runtime-health
+claim. `external` is a legitimate explicit wrapper binding, not an instruction to
+adopt it. `incomplete` and `unknown` explain absent/conflicting/unsupported data;
+a candidate directory alone is not PM evidence. Missing plugins remain distinct.
+
+The explicitly selected home is canonicalized once: home/ancestor aliases are
+allowed, but metadata symlink components inside that canonical home are refused.
+An outside-home plugin symlink is reported as a present binding only, with unknown
+ownership: its destination is not inspected, even to distinguish missing from
+existing packages. This is not proof of an installed or working runtime. Skill
+metadata errors (including unsafe paths or later read failures) are reported
+separately and do not erase verified plugin/PM facts. Plugin/PM metadata drift
+still prevents a complete ownership verdict.
+
+The supported reference is Hermes `f4ac0bea1ea50bba62886fb0b7e308e4edee8fd3`:
+facts schema 1, selected per-install generation, manifest-only `plugin-deps`
+workspace members and exact Core/provider requirements. The selected `uv.lock`
+must contain exactly one matching package/version record for each of Core and
+provider; empty, conflicting or ambiguous locks cannot report completeness.
+The PM stamp is recorded but not recomputed/validated: this is a package-metadata
+comparison, not proof that PM completed a transaction or a dependency resolver.
+Other schemas, Python
+without `tomllib`, metadata links, outside-home package trees, missing/ambiguous
+distributions and unsupported versions remain unknown. Critical METADATA/WHEEL/
+package-init hashes are checked, not every installed file or imported function.
+Repeated reads and binding checks detect ordinary changes, not an atomic
+transaction or protection against adversarial filesystem races. No runtime,
+hook, autosave, update or release acceptance is implied. This enhancement is
+separate from publication of the already merged #1217 fix.
+
 ## How It Works
 
 Mnemosyne runs on three stages:
