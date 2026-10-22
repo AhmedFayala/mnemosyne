@@ -54,6 +54,54 @@ user_profile_enabled: false
 
 Mnemosyne handles everything: capture, recall, consolidation, knowledge graph, multi-agent validation. The built-in MEMORY.md/USER.md system is redundant and just burns tokens. One provider. One memory layer.
 
+## Read-only installation ownership status
+
+`PYTHONDONTWRITEBYTECODE=1 mnemosyne-hermes --hermes-home /selected/home status`
+reads installation metadata in that explicit home, not the calling Python's
+runtime. It does not run Python/PM, import Core/provider code, activate `.pth`
+files, open stores, sync, repair, adopt, create directories, or contact a network.
+Interpreter startup is outside this command-logic guarantee; use a trusted
+interpreter and disable bytecode as above.
+
+Illustrative output (not a current installation measurement):
+
+    Ownership: pm_managed
+    Package metadata consistency: adoption complete (METADATA ONLY)
+    Runtime/provider function/hooks/autosave: NOT CHECKED
+
+`pm_managed` requires recorded PM inputs, candidate requirements, plugin binding,
+and selected Core/provider package metadata to agree. Chosen extras come from
+recorded requirements, never inferred from installed libraries. `legacy` means a
+package symlink with verified critical RECORD metadata, not a runtime-health
+claim. `external` is a legitimate explicit wrapper binding, not an instruction to
+adopt it. `incomplete` and `unknown` explain absent/conflicting/unsupported data;
+a candidate directory alone is not PM evidence. Missing plugins remain distinct.
+
+The explicitly selected home is canonicalized once: home/ancestor aliases are
+allowed, but metadata symlink components inside that canonical home are refused.
+An outside-home plugin symlink is reported as a present binding only, with unknown
+ownership: its destination is not inspected, even to distinguish missing from
+existing packages. This is not proof of an installed or working runtime. Skill
+metadata errors (including unsafe paths or later read failures) are reported
+separately and do not erase verified plugin/PM facts. Plugin/PM metadata drift
+still prevents a complete ownership verdict.
+
+The supported reference is Hermes `f4ac0bea1ea50bba62886fb0b7e308e4edee8fd3`:
+facts schema 1, selected per-install generation, manifest-only `plugin-deps`
+workspace members and exact Core/provider requirements. The selected `uv.lock`
+must contain exactly one matching package/version record for each of Core and
+provider; empty, conflicting or ambiguous locks cannot report completeness.
+The PM stamp is recorded but not recomputed/validated: this is a package-metadata
+comparison, not proof that PM completed a transaction or a dependency resolver.
+Other schemas, Python
+without `tomllib`, metadata links, outside-home package trees, missing/ambiguous
+distributions and unsupported versions remain unknown. Critical METADATA/WHEEL/
+package-init hashes are checked, not every installed file or imported function.
+Repeated reads and binding checks detect ordinary changes, not an atomic
+transaction or protection against adversarial filesystem races. No runtime,
+hook, autosave, update or release acceptance is implied. This enhancement is
+separate from publication of the already merged #1217 fix.
+
 ## How It Works
 
 Mnemosyne runs on three stages:
@@ -211,6 +259,77 @@ mnemosyne-hermes install --dry-run          # shows which interpreter would be u
 `--python` is authoritative in both install modes: it overrides discovery for a
 symlink install, and selects the site-packages a `--mode wrapper` install imports
 from.
+
+#### Explicit legacy PM adoption (development, not yet released)
+
+This opt-in flow is for a verified existing legacy package-symlink installation
+whose exact core/provider pair should become owned by Hermes' package manager
+(PM). It requires a supporting Hermes PM installation and an installer from this
+checkout or a future SDK release containing `--adopt-pm`. Published
+`mnemosyne-hermes` **0.7.6 does not contain this option**. This is not a replacement
+for normal installation or Docker/persistent side-venv wrapper setup.
+
+The public PM integration was verified against Hermes revision
+`f4ac0bea1ea50bba62886fb0b7e308e4edee8fd3`: it exposes
+`pm.plugin_inputs.Candidates` and callable `pm.sync_venv`, accepts explicit plugin
+candidates, and consumes their `python_dependencies`. The verified legacy pair
+was core 3.15.1/provider 0.5.0, including real resolver-conflict and repair checks
+with resource-monitoring warnings. This is a tested reference, not an invented
+released-version floor or an all-version/all-platform guarantee. A metadata-only
+dry-run does not import PM or certify these apply-time prerequisites.
+
+Use the supporting installer's standalone tool environment for the command below;
+it is distinct from the **prior virtual environment** passed to `--python`.
+Do not upgrade the prior environment to obtain the installer. Here
+`/path/to/installer-venv/bin/mnemosyne-hermes` means the console command installed
+from this checkout or that future release, not the old provider's command.
+
+First inspect the read-only plan, using the selected Hermes home's global argument
+before `install` and the explicit prior VENV's Python:
+
+```bash
+/path/to/installer-venv/bin/mnemosyne-hermes --hermes-home /path/to/hermes-home install --adopt-pm --python /path/to/prior-venv/bin/python --core-extras embeddings --provider-extras none --dry-run
+```
+
+The extras above are **operator-chosen examples**, not autodetection: both
+`--core-extras` and `--provider-extras` require an explicit choice when the prior
+selection cannot be established. Confirm your actual selections first; use `none`
+for no extras or comma-separated names for selected extras. Merely installed
+libraries or advertised available extras do not establish what was selected.
+The plan reads installed metadata without importing the prior provider/core or
+activating its environment, and does not change data, models, config or bindings.
+It is not a guarantee that dependency resolution or apply will succeed.
+
+Only after reviewing the plan, consent to PM ownership with the same command
+without `--dry-run`:
+
+```bash
+/path/to/installer-venv/bin/mnemosyne-hermes --hermes-home /path/to/hermes-home install --adopt-pm --python /path/to/prior-venv/bin/python --core-extras embeddings --provider-extras none
+```
+
+Adoption preserves the verified exact installed core/provider versions and chosen
+extras; it does not select latest, bootstrap a beta, or upgrade to Core 4. Plan
+any version upgrade separately and explicitly. Unknown or modified legacy targets
+are refused. Externally owned persistent side-venv/directory wrappers remain
+untouched, even with `--force`; this flow does not convert them.
+
+Adoption also refuses legacy child-profile links that point directly at the prior
+package, including opted-in profiles; it will not leave those OLD bindings behind.
+Before retrying, inspect each affected link and its ownership. Deliberately
+re-point an appropriate owned profile link to the root
+`<hermes-home>/plugins/mnemosyne` binding, or explicitly remove only that owned
+profile link if that is your intended configuration. No profile-link removal is
+automatic, and `--force` does not bypass this refusal.
+
+A genuine resolver conflict **before PM selection commit** leaves config, facts,
+the selected application generation and plugin/profile bindings unchanged. PM
+commit and the later local binding swap are **not one crash-atomic transaction**.
+An ambiguous admission error may occur after commit: selection may have changed,
+the candidate declaration is retained, and owned legacy bindings remain unchanged
+on that admission-error path. Inspect the reported PM state before taking another
+action; do not infer a global rollback. A subsequent local binding failure is
+reported as partial state, not success. Owned candidate/cache files can persist
+even after a resolver conflict. Restart Hermes after successful adoption.
 
 #### Wrapper validation timeout
 
