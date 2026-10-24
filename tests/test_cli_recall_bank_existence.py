@@ -90,7 +90,7 @@ def test_missing_explicit_bank_fails_before_initialization(
         (tmp_path / "data" / "banks" / "does-not-exist").mkdir(parents=True)
     before = _snapshot(tmp_path)
     result = cli([command, "x", "5", "--json"], "does-not-exist")
-    assert result.returncode != 0, "missing bank must not look like an empty search"
+    assert result.returncode == 2, "missing bank must not look like an empty search"
     message = (
         "Bank 'does-not-exist' does not exist"
         if state == "missing"
@@ -173,7 +173,7 @@ def test_missing_bank_does_not_fall_back_to_foreign_root(cli, tmp_path, command)
     assert stored.returncode == 0, stored.stderr
     before = _snapshot(foreign)
     result = cli([command, "syntheticquartz", "5", "--json"], " known ")
-    assert result.returncode != 0
+    assert result.returncode == 2
     assert result.stderr == "Error: Bank 'known' does not exist\n"
     assert result.stdout == ""
     assert _snapshot(foreign) == before
