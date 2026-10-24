@@ -190,6 +190,18 @@ def cmd_recall(args):
     query = positionals[0]
     top_k = _parse_int(positionals[1], "top_k") if len(positionals) > 1 else 5
 
+    bank = _resolve_bank_name()
+    if bank != "default":
+        # Check before _get_memory: importing memory initializes the default DB,
+        # and BankManager's constructor creates banks/. This is path validation,
+        # not a read-only open; normal recall initialization/bookkeeping remains.
+        from mnemosyne.core.banks import get_bank_db_path_read_only
+
+        try:
+            get_bank_db_path_read_only(bank, data_dir=Path(DATA_DIR))
+        except (ValueError, FileNotFoundError) as error:
+            _fail(str(error))
+
     mem = _get_memory()
     payload = mem.recall(query, top_k=top_k, explain=explain)
     if explain:
