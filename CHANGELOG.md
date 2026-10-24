@@ -8,6 +8,8 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 ## [Unreleased]
 
 ### Fixed
+- **Repeated hygiene archive preserves the first archive's restore value and provenance (#1235).** Already-archived rows are kept without another archive event; inconsistent unarchived rows with a saved archive importance fail without overwriting it. Audit visibility and historical recovery are unchanged.
+
 - **MCP `mnemosyne_remember` and batch operations default omitted `scope` to `global` (#653).** Memories written via the MCP server previously defaulted to `scope='session'` under the fixed `session_id=mcp_{bank}`, making them invisible to CLI, Hermes, and SDK readers whose sessions differ. Defaulting omitted scope to `global` restores cross-session visibility while preserving explicit `scope='session'` isolation and explicit `MNEMOSYNE_DEFAULT_SCOPE` configuration.
 
 - **Partial legacy Hermes PM adoption work (#1169 remains open).** An opt-in installer path preserves the verified installed core/provider pair and operator-selected extras through Hermes PM admission, refuses external wrappers, and provides a core-free read-only console plan without changing normal installation defaults; this does not close the broader issue.
