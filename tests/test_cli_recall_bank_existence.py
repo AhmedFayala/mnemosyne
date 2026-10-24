@@ -171,6 +171,7 @@ def test_missing_bank_does_not_fall_back_to_foreign_root(cli, tmp_path, command)
         {"MNEMOSYNE_DATA_DIR": None},
     )
     assert stored.returncode == 0, stored.stderr
+    assert (foreign / "banks" / "known" / "mnemosyne.db").is_file()
     before = _snapshot(foreign)
     result = cli([command, "syntheticquartz", "5", "--json"], " known ")
     assert result.returncode == 2
